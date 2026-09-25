@@ -1433,17 +1433,32 @@ async def delete_link(uid: str, _=Depends(require_auth)):
     return {"ok": True, "deleted": uid}
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VLESS & VMess Relay
+# VLESS / VMess / Trojan WebSocket Relay
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _register_ws_route():
     from relay_vless import websocket_tunnel
     from relay_vmess import websocket_tunnel_vmess
-    from relay_trojan import websocket_tunnel_trojan
+    from relay_trojan import handle_trojan_ws
 
+    # Existing VLESS/VMess routes remain unchanged.
     app.add_api_websocket_route("/ws/{uuid}", websocket_tunnel)
     app.add_api_websocket_route("/vmess/{uuid}", websocket_tunnel_vmess)
-    app.add_api_websocket_route("/trojan/{uuid}", websocket_tunnel_trojan)
+
+    # Trojan uses the callback-based handler instead of the wrapper that imports
+    # main.py from inside relay_trojan.py. This avoids a circular-import edge
+    # case where the WebSocket endpoint can return before websocket.accept(),
+    # which FastAPI/Starlette reports as a 403 handshake rejection.
+    async def trojan_websocket(websocket: WebSocket, uuid: str):
+        await handle_trojan_ws(
+            websocket,
+            uuid,
+            find_link_by_key,
+            is_ip_allowed,
+            LINKS_LOCK,
+        )
+
+    app.add_api_websocket_route("/trojan/{uuid}", trojan_websocket)
 
 _register_ws_route()
 
