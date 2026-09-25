@@ -1,29 +1,45 @@
 # relay_vmess.py
-# ══════════════════════════════════════════════════════════════════════════
-# VMess AEAD Relay — سازگار با Xray-core 24/25/26
+# ══════════════════════════════════════════════════════════════════════════════
+# VMess AEAD Relay — Xray-compatible request/response headers + body AEAD
 #
-#   ✔ AuthID بهصورت AES-ECB رمزگشایی میشود (نه HMAC)
-#   ✔ cmdKey با پسوند صحیح 'c48619fe-8f02-49e0-b9e9-edf763e17e21'
-#   ✔ connNonce (۸ بایت) در مشتقسازی کلید Length/Payload استفاده میشود
-#   ✔ Salt strings عیناً مطابق Xray-core
-#   ✔ Response header با AEAD envelope (۶۸ بایت)
-#   ✔ throttle + check_and_use مشترک با VLESS
-# ══════════════════════════════════════════════════════════════════════════
+# Based on the current VMess AEAD wire format used by Xray/v2ray:
+#   • CmdKey = MD5(UUID bytes + fixed VMess command-key suffix)
+#   • AuthID = AES-128-ECB(KDF(CmdKey, "AES Auth ID Encryption"))
+#                over [timestamp(8) | random(4) | CRC32(4)]
+#   • Nested-HMAC VMess KDF (not an HMAC digest cascade)
+#   • Request header contains: AuthID | encrypted_length | connection_nonce |
+#     encrypted_payload
+#   • AEAD AAD for request header = AuthID
+#   • Response header is encrypted using SHA256(request_body_key/iv)
+#   • VMess body uses 2-byte chunk length + AEAD ciphertext/tag
+#   • AES-128-GCM and ChaCha20-Poly1305 body security are supported
+#   • Security type 0/5 (none) is passed through as raw body
+#
+# Existing project hooks preserved:
+#   main.find_link_by_key / is_link_allowed / is_ip_allowed / client_ip
+#   main.connections / main.stats / main.error_logs / save_state / now_ir
+#   relay_vless.check_and_use
+#   speed_limit.throttle
+# ══════════════════════════════════════════════════════════════════════════════
+
+from __future__ import annotations
 
 import asyncio
 import hashlib
 import hmac
+import logging
 import secrets
+import socket
 import struct
 import time
-import logging
-import socket
 import zlib
+from collections import OrderedDict
+from typing import Optional, Tuple
 from uuid import UUID
 
-from fastapi import WebSocket, WebSocketDisconnect
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+from fastapi import WebSocket, WebSocketDisconnect
 
 import main
 from relay_vless import check_and_use
@@ -34,237 +50,513 @@ logger = logging.getLogger("OMIDIRAN_PANEL.VMESS")
 RELAY_BUF = 256 * 1024
 TCP_CONNECT_TIMEOUT = 10.0
 FIRST_FRAME_TIMEOUT = 15.0
+BODY_CHUNK_SIZE = 16 * 1024
+MAX_HEADER_SIZE = 64 * 1024
+AUTH_ID_WINDOW = 120
+AUTH_ID_CACHE_MAX = 8192
 
-# ══════════════════════════════════════════════════════════════════════════
-# Salt strings — عیناً مطابق Xray-core
-# ══════════════════════════════════════════════════════════════════════════
+# Xray / v2ray VMess constants.
 KDF_SALT = b"VMess AEAD KDF"
+AUTH_ID_ENCRYPTION_KEY = "AES Auth ID Encryption"
+SALT_REQ_LEN_KEY = "VMess Header AEAD Key_Length"
+SALT_REQ_LEN_NONCE = "VMess Header AEAD Nonce_Length"
+SALT_REQ_PAY_KEY = "VMess Header AEAD Key"
+SALT_REQ_PAY_NONCE = "VMess Header AEAD Nonce"
+SALT_RESP_LEN_KEY = "AEAD Resp Header Len Key"
+SALT_RESP_LEN_IV = "AEAD Resp Header Len IV"
+SALT_RESP_PAY_KEY = "AEAD Resp Header Key"
+SALT_RESP_PAY_IV = "AEAD Resp Header IV"
+VMESS_CMD_KEY_SUFFIX = b"c48619fe-8f02-49e0-b9e9-edf763e17e21"
 
-SALT_AUTH_ID_ENCRYPTION = b"AES Auth ID Encryption"
-
-SALT_REQ_LEN_KEY = b"VMess Header AEAD Key_Length"
-SALT_REQ_LEN_IV  = b"VMess Header AEAD Nonce_Length"
-SALT_REQ_PAY_KEY = b"VMess Header AEAD Key"
-SALT_REQ_PAY_IV  = b"VMess Header AEAD Nonce"
-
-SALT_RESP_LEN_KEY = b"AEAD Resp Header Len Key"
-SALT_RESP_LEN_IV  = b"AEAD Resp Header Len IV"
-SALT_RESP_PAY_KEY = b"AEAD Resp Header Key"
-SALT_RESP_PAY_IV  = b"AEAD Resp Header IV"
-
-# پسوند صحیح cmdKey — مقدار اشتباه در کد قبلی اصلاح شد
-CMD_KEY_SUFFIX = b"c48619fe-8f02-49e0-b9e9-edf763e17e21"
-
-# sec_type values
+# VMess security types used by Xray's current client encoder.
+SEC_AES_GCM = 3
+SEC_CHACHA20_POLY1305 = 4
 SEC_NONE = 5
-SEC_ZERO = 6
+SEC_ZERO = 0
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# KDF — مطابق دقیق Xray-core
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# KDF
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _NestedHash:
+    """Hash adapter used to reproduce Xray's nested-HMAC KDF exactly."""
+
+    digest_size = hashlib.sha256().digest_size
+    block_size = hashlib.sha256().block_size
+    name = "sha256"
+
+    __slots__ = ("_fn", "_buf")
+
+    def __init__(self, fn):
+        self._fn = fn
+        self._buf = bytearray()
+
+    def update(self, data: bytes) -> None:
+        self._buf.extend(data)
+
+    def digest(self) -> bytes:
+        return self._fn(bytes(self._buf))
+
+    def hexdigest(self) -> str:
+        return self.digest().hex()
+
+    def copy(self):
+        other = _NestedHash(self._fn)
+        other._buf.extend(self._buf)
+        return other
+
+
 def _kdf(key: bytes, *paths: bytes) -> bytes:
-    """Xray-core KDF chain:
-        h = HMAC-SHA256(key, "VMess AEAD KDF")
-        for each p in paths: h = HMAC-SHA256(h, p)
-        return h  (32 bytes)
-    """
-    h = hmac.new(key, KDF_SALT, hashlib.sha256).digest()
-    for p in paths:
-        h = hmac.new(h, p, hashlib.sha256).digest()
-    return h
+    """Exact Xray/v2ray VMess AEAD nested-HMAC construction."""
+    fn = lambda msg: hmac.new(KDF_SALT, msg, hashlib.sha256).digest()
+
+    for path in paths:
+        parent = fn
+        fn = lambda msg, path=path, parent=parent: hmac.new(
+            path,
+            msg,
+            digestmod=lambda: _NestedHash(parent),
+        ).digest()
+
+    return fn(key)
 
 
 def _kdf16(key: bytes, *paths: bytes) -> bytes:
     return _kdf(key, *paths)[:16]
 
 
-def _aes_ecb_decrypt(key: bytes, data: bytes) -> bytes:
-    """رمزگشایی AES-ECB — برای AuthID استفاده میشود."""
+# ══════════════════════════════════════════════════════════════════════════════
+# VMess UUID / AuthID
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cmd_key_from_uuid(u_bytes: bytes) -> bytes:
+    return hashlib.md5(u_bytes + VMESS_CMD_KEY_SUFFIX).digest()
+
+
+def _aes_ecb_block(key: bytes, data: bytes, decrypt: bool) -> bytes:
     cipher = Cipher(algorithms.AES(key), modes.ECB())
-    decryptor = cipher.decryptor()
-    return decryptor.update(data) + decryptor.finalize()
+    ctx = cipher.decryptor() if decrypt else cipher.encryptor()
+    return ctx.update(data) + ctx.finalize()
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Decode request header — منطق اصلاحشده
-# ══════════════════════════════════════════════════════════════════════════
+def _decode_auth_id(auth_id: bytes, cmd_key: bytes) -> Tuple[Optional[int], Optional[str]]:
+    if len(auth_id) != 16:
+        return None, "Auth ID length invalid"
+
+    aes_key = _kdf16(cmd_key, AUTH_ID_ENCRYPTION_KEY.encode())
+
+    try:
+        plain = _aes_ecb_block(aes_key, auth_id, decrypt=True)
+    except Exception as exc:
+        return None, f"Auth ID decrypt failed: {exc}"
+
+    if len(plain) != 16:
+        return None, "Auth ID plaintext length invalid"
+
+    timestamp = struct.unpack(">Q", plain[:8])[0]
+    expected_crc = struct.unpack(">I", plain[12:16])[0]
+    actual_crc = zlib.crc32(plain[:12]) & 0xFFFFFFFF
+
+    if expected_crc != actual_crc:
+        return None, "Auth ID CRC32 mismatch"
+
+    now = int(time.time())
+    if abs(now - int(timestamp)) > AUTH_ID_WINDOW:
+        return None, "Auth ID timestamp outside allowed window"
+
+    return int(timestamp), None
+
+
+_AUTH_ID_CACHE: "OrderedDict[bytes, float]" = OrderedDict()
+_AUTH_ID_CACHE_LOCK = asyncio.Lock()
+
+
+async def _check_replay(auth_id: bytes) -> bool:
+    """Return True when auth_id is new; False when already seen."""
+    now = time.monotonic()
+    async with _AUTH_ID_CACHE_LOCK:
+        # Drop stale entries first.
+        stale = []
+        for key, ts in _AUTH_ID_CACHE.items():
+            if now - ts > AUTH_ID_WINDOW:
+                stale.append(key)
+            else:
+                break
+        for key in stale:
+            _AUTH_ID_CACHE.pop(key, None)
+
+        if auth_id in _AUTH_ID_CACHE:
+            return False
+
+        _AUTH_ID_CACHE[auth_id] = now
+        while len(_AUTH_ID_CACHE) > AUTH_ID_CACHE_MAX:
+            _AUTH_ID_CACHE.popitem(last=False)
+        return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Request header
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _decrypt_gcm(key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes | None) -> bytes:
+    return AESGCM(key).decrypt(nonce, ciphertext, aad)
+
+
+def _parse_address(payload: bytes, idx: int, addr_type: int) -> Tuple[str, int]:
+    if addr_type == 1:  # IPv4
+        if len(payload) < idx + 4:
+            raise ValueError("truncated IPv4 address")
+        return socket.inet_ntoa(payload[idx:idx + 4]), idx + 4
+
+    if addr_type == 2:  # Domain
+        if len(payload) < idx + 1:
+            raise ValueError("truncated domain length")
+        dlen = payload[idx]
+        idx += 1
+        if len(payload) < idx + dlen:
+            raise ValueError("truncated domain address")
+        return payload[idx:idx + dlen].decode("utf-8", errors="ignore"), idx + dlen
+
+    if addr_type == 3:  # IPv6
+        if len(payload) < idx + 16:
+            raise ValueError("truncated IPv6 address")
+        return socket.inet_ntop(socket.AF_INET6, payload[idx:idx + 16]), idx + 16
+
+    raise ValueError(f"unknown address type: {addr_type}")
+
+
 def _decode_request_header(data: bytes, user_uuid: str):
-    """Parse VMess AEAD request header.
-    Returns: (info dict | None, error message | None)
+    """Decode a complete VMess AEAD request from one contiguous byte string.
+
+    Returns:
+        (info, error)
     """
     try:
         u_bytes = UUID(user_uuid).bytes
-    except ValueError:
+    except (ValueError, AttributeError, TypeError):
         return None, "فرمت UUID نامعتبر است"
 
-    # minimum: AuthID(16) + enc_len(18) + connNonce(8) = 42
-    if len(data) < 42:
-        return None, "دادهی هدر کافی نیست"
+    if len(data) < 16 + 18 + 8:
+        return None, "داده‌ی هدر VMess کافی نیست"
 
     auth_id = data[:16]
+    cmd_key = _cmd_key_from_uuid(u_bytes)
 
-    # ══════════════════════════════════════════════════════════════════
-    # تأیید اعتبار AuthID با AES-ECB
-    #   AuthID = AES-ECB-encrypt(cmdKey_derived, timestamp||random||CRC32)
-    #   → ما باید رمزگشایی کنیم و timestamp را بررسی کنیم
-    # ══════════════════════════════════════════════════════════════════
-    cmd_key = hashlib.md5(u_bytes + CMD_KEY_SUFFIX).digest()
+    _, auth_err = _decode_auth_id(auth_id, cmd_key)
+    if auth_err:
+        return None, f"اعتبارسنجی Auth ID ناموفق بود: {auth_err}"
 
-    # مشتقسازی کلید AES برای رمزگشایی AuthID
-    auth_id_key = _kdf16(cmd_key, SALT_AUTH_ID_ENCRYPTION)
+    # VMess AEAD uses an anti-replay AuthID.
+    # Replay check is performed before expensive header decryption.
+    # (Caller will await the async cache check.)
 
-    try:
-        decrypted = _aes_ecb_decrypt(auth_id_key, auth_id)
-    except Exception as e:
-        return None, f"خطا در رمزگشایی Auth ID: {e}"
+    encrypted_len = data[16:34]
+    connection_nonce = data[34:42]
 
-    if len(decrypted) != 16:
-        return None, "Auth ID رمزگشاییشده طول نامعتبر دارد"
-
-    # ساختار: timestamp (8B BE) + random (4B) + CRC32 (4B)
-    ts_bytes = decrypted[:8]
-    crc_bytes = decrypted[12:16]
-
-    # بررسی CRC32 — CRC32 روی ۱۲ بایت اول
-    expected_crc = zlib.crc32(decrypted[:12]) & 0xFFFFFFFF
-    actual_crc = struct.unpack(">I", crc_bytes)[0]
-    if expected_crc != actual_crc:
-        return None, "CRC32 Auth ID نامعتبر است"
-
-    # بررسی timestamp — باید در بازهٔ ±۱۲۰ ثانیه باشد
-    ts = struct.unpack(">Q", ts_bytes)[0]
-    now = int(time.time())
-    if abs(now - ts) > 120:
-        return None, f"timestamp خارج از محدوده (delta={now - ts}s)"
-
-    # ══════════════════════════════════════════════════════════════════
-    # خواندن Encrypted Length (18 بایت = 2 cipher + 16 tag)
-    # ══════════════════════════════════════════════════════════════════
-    enc_len_blob = data[16:34]
-
-    # ══════════════════════════════════════════════════════════════════
-    # خواندن connNonce (8 بایت)
-    # ══════════════════════════════════════════════════════════════════
-    conn_nonce = data[34:42]
-
-    # ── Length AEAD key/IV ──
-    # key = KDF16(cmdKey, "VMess Header AEAD Key_Length", authID, connNonce)
-    # iv  = KDF(cmdKey, "VMess Header AEAD Nonce_Length", authID, connNonce)[:12]
-    len_key = _kdf16(cmd_key, SALT_REQ_LEN_KEY, auth_id, conn_nonce)
-    len_iv  = _kdf(cmd_key, SALT_REQ_LEN_IV, auth_id, conn_nonce)[:12]
+    length_key = _kdf16(
+        cmd_key,
+        SALT_REQ_LEN_KEY.encode(),
+        auth_id,
+        connection_nonce,
+    )
+    length_nonce = _kdf(
+        cmd_key,
+        SALT_REQ_LEN_NONCE.encode(),
+        auth_id,
+        connection_nonce,
+    )[:12]
 
     try:
-        dec_len = AESGCM(len_key).decrypt(len_iv, enc_len_blob, auth_id)
+        dec_len = _decrypt_gcm(length_key, length_nonce, encrypted_len, auth_id)
+        if len(dec_len) != 2:
+            return None, "طول هدر VMess نامعتبر است"
         header_len = struct.unpack(">H", dec_len)[0]
-    except Exception as e:
-        return None, f"خطا در رمزگشایی طول هدر: {e}"
+    except Exception as exc:
+        return None, f"خطا در رمزگشایی طول هدر: {exc}"
 
-    # offset بعد از connNonce
-    payload_start = 42
-    if len(data) < payload_start + header_len + 16:
-        return None, "بدنهی هدر ناقص است"
+    if header_len < 41 or header_len > MAX_HEADER_SIZE:
+        return None, f"طول هدر خارج از محدوده است: {header_len}"
 
-    # ── Payload AEAD key/IV ──
-    payload_ct = data[payload_start : payload_start + header_len + 16]
-    header_end = payload_start + header_len + 16
+    total_header_end = 42 + header_len + 16
+    if len(data) < total_header_end:
+        return None, "بدنه‌ی هدر VMess ناقص است"
 
-    pay_key = _kdf16(cmd_key, SALT_REQ_PAY_KEY, auth_id, conn_nonce)
-    pay_iv  = _kdf(cmd_key, SALT_REQ_PAY_IV, auth_id, conn_nonce)[:12]
+    payload_ct = data[42:total_header_end]
+    payload_key = _kdf16(
+        cmd_key,
+        SALT_REQ_PAY_KEY.encode(),
+        auth_id,
+        connection_nonce,
+    )
+    payload_nonce = _kdf(
+        cmd_key,
+        SALT_REQ_PAY_NONCE.encode(),
+        auth_id,
+        connection_nonce,
+    )[:12]
 
     try:
-        payload = AESGCM(pay_key).decrypt(pay_iv, payload_ct, auth_id)
-    except Exception as e:
-        return None, f"خطا در رمزگشایی بدنهی هدر: {e}"
+        payload = _decrypt_gcm(payload_key, payload_nonce, payload_ct, auth_id)
+    except Exception as exc:
+        return None, f"خطا در رمزگشایی بدنه‌ی هدر: {exc}"
 
-    # payload = Ver(1) BodyIV(16) BodyKey(16) RespV(1) Opt(1) Sec(1) Rsv(1) Cmd(1) Port(2) AddrType(1) Addr(N) Padding(0-15) FNV1a(4)
-    if len(payload) < 41:
-        return None, "ساختار هدر معتبر نیست"
+    if len(payload) < 45:
+        return None, "ساختار هدر VMess کوتاه است"
 
+    # Fixed portion from Xray's EncodeRequestHeader:
+    # version(1) | IV(16) | key(16) | responseHeader(1) | option(1) |
+    # security(1) | reserved(1) | command(1) | address...
     ver = payload[0]
     req_iv = payload[1:17]
     req_key = payload[17:33]
-    res_check = payload[33]
-    opt = payload[34]
-    sec_byte = payload[35]
-    sec_type = sec_byte & 0x0F
-    # payload[36] = reserved
+    res_header = payload[33]
+    option = payload[34]
+    security = payload[35] & 0x0F
+    reserved = payload[36]
     cmd = payload[37]
+
     port = struct.unpack(">H", payload[38:40])[0]
     addr_type = payload[40]
+    try:
+        host, idx = _parse_address(payload, 41, addr_type)
+    except ValueError as exc:
+        return None, str(exc)
 
-    idx = 41
-    if addr_type == 1:  # IPv4
-        host = socket.inet_ntoa(payload[idx:idx+4])
-        idx += 4
-    elif addr_type == 2:  # Domain
-        dlen = payload[idx]
-        idx += 1
-        host = payload[idx:idx+dlen].decode("utf-8", errors="ignore")
-        idx += dlen
-    elif addr_type == 3:  # IPv6
-        host = socket.inet_ntop(socket.AF_INET6, payload[idx:idx+16])
-        idx += 16
-    else:
-        return None, f"نوع آدرس ناشناخته: {addr_type}"
+    # Security field high nibble is the global-padding length.
+    padding_len = (payload[35] >> 4) & 0x0F
+
+    # The VMess request header ends with padding + FNV1a32 checksum.
+    # Verify checksum whenever the payload has the expected trailer.
+    if len(payload) < idx + padding_len + 4:
+        return None, "هدر VMess برای padding/checksum ناقص است"
+
+    checksum_offset = len(payload) - 4
+    checksum = struct.unpack(">I", payload[checksum_offset:])[0]
+    body_for_hash = payload[:checksum_offset]
+
+    # FNV-1a 32, matching the Xray request encoder.
+    fnv = 2166136261
+    for b in body_for_hash:
+        fnv ^= b
+        fnv = (fnv * 16777619) & 0xFFFFFFFF
+    if fnv != checksum:
+        return None, "FNV1a header checksum mismatch"
+
+    # Mux is not routed as a normal host/port target in this relay.
+    if cmd != 1:  # TCP
+        return None, f"فرمان VMess پشتیبانی نمی‌شود: {cmd}"
 
     return {
+        "u_bytes": u_bytes,
         "cmd_key": cmd_key,
         "auth_id": auth_id,
-        "conn_nonce": conn_nonce,
+        "connection_nonce": connection_nonce,
         "ver": ver,
         "req_iv": req_iv,
         "req_key": req_key,
-        "res_check": res_check,
-        "opt": opt,
-        "sec_type": sec_type,
+        "res_header": res_header,
+        "option": option,
+        "sec_type": security,
+        "reserved": reserved,
         "cmd": cmd,
         "host": host,
         "port": port,
-        "body_init": data[header_end:],
+        "padding_len": padding_len,
+        "header_payload": payload,
+        "header_end": total_header_end,
+        "body_init": data[total_header_end:],
     }, None
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Build AEAD-encrypted response header
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# Response header
+# ══════════════════════════════════════════════════════════════════════════════
+
 def _build_response_header(info: dict) -> bytes:
-    """Response header با AEAD envelope — دقیقاً مطابق Xray-core.
+    """Build Xray-compatible AEAD response header."""
+    req_key = info["req_key"]
+    req_iv = info["req_iv"]
 
-    Plaintext (34 bytes):
-        [res_check (1)] [option (1)] [resp_iv (16)] [resp_key (16)]
+    # Xray derives response body key/IV from request body key/IV via SHA-256.
+    resp_key = hashlib.sha256(req_key).digest()[:16]
+    resp_iv = hashlib.sha256(req_iv).digest()[:16]
 
-    Wire format (68 bytes):
-        [encrypted_length (18)] [encrypted_payload (50)]
-        = 2+16                + 34+16
-    """
-    cmd_key = info["cmd_key"]
-    auth_id = info["auth_id"]
-    conn_nonce = info["conn_nonce"]
-    res_check = info["res_check"]
+    info["resp_body_key"] = resp_key
+    info["resp_body_iv"] = resp_iv
 
-    # Fresh IV/key برای body encryption
-    resp_iv  = secrets.token_bytes(16)
-    resp_key = secrets.token_bytes(16)
+    # Response header starts with 4 bytes in the decrypted plaintext:
+    # response-header-id, option, command, command-data-length.
+    plaintext = bytes([
+        info["res_header"],
+        0x00,
+        0x00,
+        0x00,
+    ])
 
-    plaintext = bytes([res_check, 0x00]) + resp_iv + resp_key
+    length_key = _kdf16(resp_key, SALT_RESP_LEN_KEY.encode())
+    length_nonce = _kdf(resp_iv, SALT_RESP_LEN_IV.encode())[:12]
+    enc_len = AESGCM(length_key).encrypt(
+        length_nonce,
+        struct.pack(">H", len(plaintext)),
+        None,
+    )
 
-    # Response AEAD keys — با connNonce
-    resp_len_key = _kdf16(cmd_key, SALT_RESP_LEN_KEY, auth_id, conn_nonce)
-    resp_len_iv  = _kdf(cmd_key, SALT_RESP_LEN_IV, auth_id, conn_nonce)[:12]
-    resp_pay_key = _kdf16(cmd_key, SALT_RESP_PAY_KEY, auth_id, conn_nonce)
-    resp_pay_iv  = _kdf(cmd_key, SALT_RESP_PAY_IV, auth_id, conn_nonce)[:12]
+    payload_key = _kdf16(resp_key, SALT_RESP_PAY_KEY.encode())
+    payload_nonce = _kdf(resp_iv, SALT_RESP_PAY_IV.encode())[:12]
+    enc_payload = AESGCM(payload_key).encrypt(
+        payload_nonce,
+        plaintext,
+        None,
+    )
 
-    length_bytes = struct.pack(">H", len(plaintext))
-    enc_len = AESGCM(resp_len_key).encrypt(resp_len_iv, length_bytes, auth_id)
-    enc_pay = AESGCM(resp_pay_key).encrypt(resp_pay_iv, plaintext, auth_id)
-
-    return enc_len + enc_pay
+    return enc_len + enc_payload
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# VMess body AEAD
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _BodyCipher:
+    """VMess body chunk codec for AES-GCM / ChaCha20-Poly1305."""
+
+    __slots__ = ("security", "key", "iv", "_counter", "_aead")
+
+    def __init__(self, security: int, key: bytes, iv: bytes):
+        self.security = security
+        self.key = key
+        self.iv = iv
+        self._counter = 0
+
+        if len(key) != 16 or len(iv) < 12:
+            raise ValueError("invalid VMess body key/iv length")
+
+        if security == SEC_AES_GCM:
+            self._aead = AESGCM(key)
+        elif security == SEC_CHACHA20_POLY1305:
+            # Xray derives a 32-byte ChaCha20-Poly1305 key from the 16-byte
+            # session key. This matches GenerateChacha20Poly1305Key.
+            self._aead = ChaCha20Poly1305(_chacha_key(key))
+        else:
+            self._aead = None
+
+    def _nonce(self) -> bytes:
+        # Xray's GenerateChunkNonce copies the IV and overwrites the first
+        # two bytes with the big-endian record counter.
+        nonce = bytearray(self.iv[:12])
+        struct.pack_into(">H", nonce, 0, self._counter & 0xFFFF)
+        self._counter = (self._counter + 1) & 0xFFFF
+        return bytes(nonce)
+
+    def seal(self, plaintext: bytes) -> bytes:
+        if self.security in (SEC_NONE, SEC_ZERO):
+            return plaintext
+        return self._aead.encrypt(self._nonce(), plaintext, None)
+
+    def open(self, ciphertext: bytes) -> bytes:
+        if self.security in (SEC_NONE, SEC_ZERO):
+            return ciphertext
+        return self._aead.decrypt(self._nonce(), ciphertext, None)
+
+
+def _chacha_key(key16: bytes) -> bytes:
+    """VMess ChaCha20-Poly1305 key: MD5(key) || MD5(MD5(key))."""
+    first = hashlib.md5(key16).digest()
+    second = hashlib.md5(first).digest()
+    return first + second
+
+
+class _BodyDecoder:
+    """Incremental VMess body decoder across arbitrary WS frame boundaries."""
+
+    __slots__ = ("codec", "buffer")
+
+    def __init__(self, codec: _BodyCipher):
+        self.codec = codec
+        self.buffer = bytearray()
+
+    def feed(self, data: bytes) -> list[bytes]:
+        if data:
+            self.buffer.extend(data)
+
+        out: list[bytes] = []
+
+        if self.codec.security in (SEC_NONE, SEC_ZERO):
+            if self.buffer:
+                out.append(bytes(self.buffer))
+                self.buffer.clear()
+            return out
+
+        while True:
+            if len(self.buffer) < 2:
+                break
+
+            chunk_len = struct.unpack(">H", self.buffer[:2])[0]
+
+            # For encrypted VMess chunks, L includes the AEAD tag.
+            if chunk_len < 16:
+                raise ValueError("VMess encrypted chunk length too small")
+
+            total = 2 + chunk_len
+            if len(self.buffer) < total:
+                break
+
+            del self.buffer[:2]
+            ciphertext = bytes(self.buffer[:chunk_len])
+            del self.buffer[:chunk_len]
+
+            try:
+                plain = self.codec.open(ciphertext)
+            except Exception as exc:
+                raise ValueError(f"VMess body AEAD decrypt failed: {exc}") from exc
+
+            if len(plain) != chunk_len - 16:
+                raise ValueError("VMess decrypted chunk length mismatch")
+
+            if plain:
+                out.append(plain)
+
+        return out
+
+    def finish(self) -> None:
+        if self.codec.security in (SEC_NONE, SEC_ZERO):
+            self.buffer.clear()
+            return
+        if self.buffer:
+            raise ValueError("incomplete VMess body chunk")
+
+
+class _BodyEncoder:
+    """Incremental VMess body encoder."""
+
+    __slots__ = ("codec",)
+
+    def __init__(self, codec: _BodyCipher):
+        self.codec = codec
+
+    def encode(self, data: bytes) -> list[bytes]:
+        if not data:
+            return []
+
+        if self.codec.security in (SEC_NONE, SEC_ZERO):
+            return [data]
+
+        out: list[bytes] = []
+        pos = 0
+        while pos < len(data):
+            part = data[pos:pos + BODY_CHUNK_SIZE]
+            pos += len(part)
+            encrypted = self.codec.seal(part)
+            # VMess length field is the complete encrypted packet length,
+            # including the 16-byte AEAD authentication tag.
+            out.append(struct.pack(">H", len(encrypted)) + encrypted)
+        return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Socket tuning
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+
 def _tune_socket(writer: asyncio.StreamWriter):
     sock = writer.transport.get_extra_info("socket")
     if not sock:
@@ -275,31 +567,52 @@ def _tune_socket(writer: asyncio.StreamWriter):
         pass
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Data transfer: WS → TCP (uplink)
-# ══════════════════════════════════════════════════════════════════════════
-async def _vmess_ws_to_tcp(ws: WebSocket, writer: asyncio.StreamWriter, conn_id: str, uid: str):
+# ══════════════════════════════════════════════════════════════════════════════
+# Data transfer: WebSocket → TCP
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _vmess_ws_to_tcp(
+    ws: WebSocket,
+    writer: asyncio.StreamWriter,
+    conn_id: str,
+    uid: str,
+    decoder: _BodyDecoder,
+):
     try:
         while True:
             msg = await ws.receive()
             if msg["type"] == "websocket.disconnect":
                 break
+
             data = msg.get("bytes") or (msg.get("text") or "").encode()
             if not data:
                 continue
+
             if not await check_and_use(uid, len(data)):
                 await ws.close(code=1008, reason="quota/disabled/unknown")
                 break
+
             await throttle(uid, len(data))
             main.stats["total_requests"] += 1
             if conn_id in main.connections:
                 main.connections[conn_id]["bytes"] += len(data)
-            writer.write(data)
-            if writer.transport.get_write_buffer_size() > RELAY_BUF:
-                await writer.drain()
-    except (WebSocketDisconnect, Exception):
+
+            for plaintext in decoder.feed(data):
+                writer.write(plaintext)
+                if writer.transport.get_write_buffer_size() > RELAY_BUF:
+                    await writer.drain()
+
+    except WebSocketDisconnect:
         pass
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(f"⚠️ VMess uplink error [{conn_id}]: {exc}")
     finally:
+        try:
+            decoder.finish()
+        except Exception:
+            pass
         try:
             if writer.can_write_eof():
                 writer.write_eof()
@@ -307,29 +620,44 @@ async def _vmess_ws_to_tcp(ws: WebSocket, writer: asyncio.StreamWriter, conn_id:
             pass
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Data transfer: TCP → WS (downlink)
-# ══════════════════════════════════════════════════════════════════════════
-async def _vmess_tcp_to_ws(ws: WebSocket, reader: asyncio.StreamReader, conn_id: str, uid: str):
+# ══════════════════════════════════════════════════════════════════════════════
+# Data transfer: TCP → WebSocket
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _vmess_tcp_to_ws(
+    ws: WebSocket,
+    reader: asyncio.StreamReader,
+    conn_id: str,
+    uid: str,
+    encoder: _BodyEncoder,
+):
     try:
         while True:
             data = await reader.read(RELAY_BUF)
             if not data:
                 break
+
             if not await check_and_use(uid, len(data)):
                 await ws.close(code=1008, reason="quota/disabled/unknown")
                 break
+
             await throttle(uid, len(data))
             if conn_id in main.connections:
                 main.connections[conn_id]["bytes"] += len(data)
-            await ws.send_bytes(data)
-    except Exception:
-        pass
+
+            for chunk in encoder.encode(data):
+                await ws.send_bytes(chunk)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(f"⚠️ VMess downlink error [{conn_id}]: {exc}")
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # Main VMess tunnel
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+
 async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
     await websocket.accept()
     conn_id = f"vmess-{id(websocket)}"
@@ -345,7 +673,7 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
 
     if not main.is_ip_allowed(link, real_uid, ip):
         logger.warning(f"🚫 VMess rejected uuid={uuid[:8]}… ip={ip} (ip limit)")
-        await websocket.close(code=4001, reason="محدودیت تعداد آیپِی همزمان")
+        await websocket.close(code=4001, reason="محدودیت تعداد آی‌پِی هم‌زمان")
         return
 
     main.connections[conn_id] = {
@@ -355,17 +683,23 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
         "connected_at": main.now_ir().isoformat(),
         "transport": "vmess-ws",
     }
-    logger.info(f"✅ VMess [{conn_id}] uuid={real_uid[:8]}… ip={ip} total={len(main.connections)}")
+    logger.info(
+        f"✅ VMess [{conn_id}] uuid={real_uid[:8]}… ip={ip} "
+        f"total={len(main.connections)}"
+    )
 
-    target_writer = None
+    target_writer: Optional[asyncio.StreamWriter] = None
+    tasks: set[asyncio.Task] = set()
+
     try:
-        # ── Frame 1: AEAD header ──
+        # ── Frame 1: must contain the complete AEAD VMess header ──
         try:
             first_frame = await asyncio.wait_for(
-                websocket.receive_bytes(), timeout=FIRST_FRAME_TIMEOUT
+                websocket.receive_bytes(),
+                timeout=FIRST_FRAME_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            logger.warning(f"⏱️  VMess first-frame timeout [{ip}]")
+            logger.warning(f"⏱️ VMess first-frame timeout [{ip}]")
             return
 
         if not first_frame:
@@ -373,11 +707,22 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
 
         header_info, err = _decode_request_header(first_frame, real_uid)
         if err or not header_info:
-            logger.warning(f"⚠️  VMess header parse error [{ip}]: {err}")
+            logger.warning(f"⚠️ VMess header parse error [{ip}]: {err}")
             await websocket.close(code=4002, reason="خطا در خواندن هدر VMess")
             return
 
-        # ── Quota: header bytes ──
+        if not await _check_replay(header_info["auth_id"]):
+            logger.warning(f"🚫 VMess replayed AuthID [{ip}]")
+            await websocket.close(code=4002, reason="AuthID تکراری است")
+            return
+
+        sec_type = header_info["sec_type"]
+        if sec_type not in (SEC_AES_GCM, SEC_CHACHA20_POLY1305, SEC_NONE, SEC_ZERO):
+            logger.warning(f"⚠️ VMess unsupported security [{ip}]: {sec_type}")
+            await websocket.close(code=4002, reason="نوع رمز VMess پشتیبانی نمی‌شود")
+            return
+
+        # ── Quota: original websocket frame bytes ──
         if not await check_and_use(real_uid, len(first_frame)):
             await websocket.close(code=1008, reason="quota/disabled/unknown")
             return
@@ -385,34 +730,45 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
         if conn_id in main.connections:
             main.connections[conn_id]["bytes"] += len(first_frame)
 
-        if header_info["sec_type"] not in (SEC_NONE, SEC_ZERO):
-            logger.warning(
-                f"⚠️  VMess unsupported sec_type={header_info['sec_type']} "
-                f"[{conn_id}] — body will be relayed as-is"
-            )
-
         host = header_info["host"]
         port = header_info["port"]
 
         # ── Connect to target ──
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=TCP_CONNECT_TIMEOUT
+                asyncio.open_connection(host, port),
+                timeout=TCP_CONNECT_TIMEOUT,
             )
             target_writer = writer
             _tune_socket(writer)
-        except Exception as e:
-            logger.error(f"VMess connect failed {host}:{port} -> {e}")
+        except Exception as exc:
+            logger.error(f"VMess connect failed {host}:{port} -> {exc}")
             await websocket.close(code=4003, reason="امکان اتصال به مقصد نیست")
             return
 
         logger.info(
-            f"➡️  VMess [{conn_id}] → {host}:{port} "
-            f"sec_type={header_info['sec_type']} opt={header_info['opt']}"
+            f"➡️ VMess [{conn_id}] → {host}:{port} "
+            f"sec_type={sec_type}"
         )
 
-        if header_info["body_init"]:
-            writer.write(header_info["body_init"])
+        # ── Body codecs ──
+        request_codec = _BodyCipher(
+            sec_type,
+            header_info["req_key"],
+            header_info["req_iv"],
+        )
+        response_key = hashlib.sha256(header_info["req_key"]).digest()[:16]
+        response_iv = hashlib.sha256(header_info["req_iv"]).digest()[:16]
+        response_codec = _BodyCipher(sec_type, response_key, response_iv)
+
+        request_decoder = _BodyDecoder(request_codec)
+        response_encoder = _BodyEncoder(response_codec)
+
+        # ── Send any body records carried after the request header ──
+        body_init = header_info["body_init"]
+        if body_init:
+            for plaintext in request_decoder.feed(body_init):
+                writer.write(plaintext)
             await writer.drain()
 
         # ── Send AEAD-encrypted response header ──
@@ -420,24 +776,55 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
         await websocket.send_bytes(resp_header)
 
         # ── Bidirectional relay ──
+        tasks = {
+            asyncio.create_task(
+                _vmess_ws_to_tcp(
+                    websocket,
+                    writer,
+                    conn_id,
+                    real_uid,
+                    request_decoder,
+                )
+            ),
+            asyncio.create_task(
+                _vmess_tcp_to_ws(
+                    websocket,
+                    reader,
+                    conn_id,
+                    real_uid,
+                    response_encoder,
+                )
+            ),
+        }
+
         done, pending = await asyncio.wait(
-            {
-                asyncio.create_task(_vmess_ws_to_tcp(websocket, writer, conn_id, real_uid)),
-                asyncio.create_task(_vmess_tcp_to_ws(websocket, reader, conn_id, real_uid)),
-            },
+            tasks,
             return_when=asyncio.FIRST_COMPLETED,
         )
-        for t in pending:
-            t.cancel()
+
+        for task in done:
             try:
-                await t
+                task.result()
             except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning(f"⚠️ VMess relay task failed [{conn_id}]: {exc}")
+
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
                 pass
 
         asyncio.create_task(main.save_state())
 
     except WebSocketDisconnect:
         pass
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         main.stats["total_errors"] += 1
         main.error_logs.append({
@@ -447,15 +834,24 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
         })
         logger.error(f"VMess tunnel error [{conn_id}]: {exc}")
     finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
         main.connections.pop(conn_id, None)
+
         if target_writer:
             try:
                 target_writer.close()
                 await target_writer.wait_closed()
             except Exception:
                 pass
+
         try:
             await websocket.close()
         except Exception:
             pass
-        logger.info(f"🔌 VMess closed [{conn_id}] total={len(main.connections)}")
+
+        logger.info(
+            f"🔌 VMess closed [{conn_id}] total={len(main.connections)}"
+        )
