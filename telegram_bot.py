@@ -288,7 +288,12 @@ async def _send_photo_bytes(chat_id: int, filename: str, content: bytes, caption
 
 
 def _build_styled_qr_png(data: str, size: int = 560) -> bytes:
-    """Build a QR visually close to the OMID panel QRCodeStyling theme."""
+    """Build a Telegram-friendly QR close to the OMID web-panel style.
+
+    Scanner safety is prioritized over exact visual parity:
+    the three finder patterns stay structurally standard, while the data
+    modules use rounded blue->purple styling like the web panel.
+    """
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
@@ -300,40 +305,59 @@ def _build_styled_qr_png(data: str, size: int = 560) -> bytes:
     matrix = qr.get_matrix()
     n = len(matrix)
 
-    scale = 2
-    work = max(size * scale, 1120)
-    padding = 24 * scale
-    usable = work - 2 * padding
+    supersample = 3
+    work = size * supersample
+    quiet = max(24, int(size * 0.055)) * supersample
+    usable = work - 2 * quiet
     cell = usable / n
 
     img = Image.new("RGB", (work, work), "white")
     draw = ImageDraw.Draw(img)
 
-    # Same blue -> purple diagonal gradient used by the web panel.
-    c0 = (74, 144, 255)
-    c1 = (176, 38, 255)
+    c0 = (74, 144, 255)   # #4a90ff
+    c1 = (176, 38, 255)   # #b026ff
 
     def color_at(x: float, y: float):
-        t = max(0.0, min(1.0, (x + y) / (work * 1.35)))
-        return tuple(int(c0[i] * (1.0 - t) + c1[i] * t) for i in range(3))
+        t = max(0.0, min(1.0, (x + y) / (work * 1.42)))
+        return tuple(round(c0[i] * (1.0 - t) + c1[i] * t) for i in range(3))
 
-    # Extra-rounded modules, with a tiny white gap to mimic QRCodeStyling.
-    gap = max(1.4 * scale, cell * 0.10)
-    radius = max(1.0 * scale, cell * 0.28)
+    def in_finder(row: int, col: int) -> bool:
+        return (
+            (row < 7 and col < 7)
+            or (row < 7 and col >= n - 7)
+            or (row >= n - 7 and col < 7)
+        )
 
+    # Standard finder patterns: keep their exact 7x7 structure for scanners.
+    # They still use the same blue->purple gradient as the panel.
     for row, line in enumerate(matrix):
-        y0 = padding + row * cell + gap
-        y1 = padding + (row + 1) * cell - gap
         for col, dark in enumerate(line):
-            if not dark:
+            if not dark or not in_finder(row, col):
                 continue
-            x0 = padding + col * cell + gap
-            x1 = padding + (col + 1) * cell - gap
-            cx = (x0 + x1) / 2
-            cy = (y0 + y1) / 2
-            draw.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=color_at(cx, cy))
+            x0 = quiet + col * cell
+            y0 = quiet + row * cell
+            x1 = quiet + (col + 1) * cell
+            y1 = quiet + (row + 1) * cell
+            draw.rectangle((x0, y0, x1, y1), fill=color_at((x0 + x1) / 2, (y0 + y1) / 2))
 
-    # Add a clean white quiet-zone/frame like the panel.
+    # Rounded data modules, with a small white separation like QRCodeStyling.
+    gap = max(cell * 0.07, 0.9 * supersample)
+    radius = max(cell * 0.24, 1.5 * supersample)
+    for row, line in enumerate(matrix):
+        for col, dark in enumerate(line):
+            if not dark or in_finder(row, col):
+                continue
+            x0 = quiet + col * cell + gap
+            y0 = quiet + row * cell + gap
+            x1 = quiet + (col + 1) * cell - gap
+            y1 = quiet + (row + 1) * cell - gap
+            draw.rounded_rectangle(
+                (x0, y0, x1, y1),
+                radius=radius,
+                fill=color_at((x0 + x1) / 2, (y0 + y1) / 2),
+            )
+
+    # Smooth edges while keeping the QR modules crisp enough for camera scans.
     img = img.resize((size, size), Image.Resampling.LANCZOS)
 
     out = io.BytesIO()
