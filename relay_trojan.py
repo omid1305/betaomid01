@@ -491,15 +491,28 @@ async def _connect_tcp(
     host: str,
     port: int,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    return await asyncio.wait_for(
-        asyncio.open_connection(
-            host,
-            port,
-            family=socket.AF_UNSPEC,
-            happy_eyeballs=True,
-        ),
-        timeout=TCP_CONNECT_TIMEOUT,
-    )
+    # Keep this compatible with Python/asyncio versions that do not expose
+    # the newer ``happy_eyeballs`` argument on create_connection().
+    try:
+        return await asyncio.wait_for(
+            asyncio.open_connection(
+                host,
+                port,
+                family=socket.AF_UNSPEC,
+            ),
+            timeout=TCP_CONNECT_TIMEOUT,
+        )
+    except TypeError as exc:
+        # Extremely old asyncio builds may reject the family keyword too.
+        if "family" not in str(exc):
+            raise
+        return await asyncio.wait_for(
+            asyncio.open_connection(
+                host,
+                port,
+            ),
+            timeout=TCP_CONNECT_TIMEOUT,
+        )
 
 
 class _UDPProtocol(asyncio.DatagramProtocol):
