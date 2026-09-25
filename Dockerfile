@@ -3,18 +3,14 @@
 # ══════════════════════════════════════════════════════════════════════════
 #   • Base: python:3.11-slim (سبک، امن، با پشتیبانی طولانی)
 #   • Non-root user برای امنیت
-#   • Volume mount point روی /data برای persist state
 #   • Healthcheck روی /health
 #   • Multi-arch ready (amd64 + arm64)
+#   • سازگار با Railway (بدون VOLUME — از Railway Volumes استفاده کن)
 # ══════════════════════════════════════════════════════════════════════════
 
 FROM python:3.11-slim
 
 # ── System dependencies ───────────────────────────────────────────────────
-# ca-certificates → برای TLS (httpx به HTTPS وصل می‌شه)
-# tzdata          → برای ZoneInfo("Asia/Tehran")
-# curl            → اختیاری، برای healthcheck/diagnostics
-# بدون gcc/pybuild-essential چون همه‌ی پکیج‌ها wheel آماده دارن
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         tzdata \
@@ -34,7 +30,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # ── Python dependencies (cache layer) ─────────────────────────────────────
-# این لایه کش می‌شه مادامی که requirements.txt تغییر نکنه
 COPY requirements.txt ./
 
 RUN python -m pip install --upgrade pip \
@@ -44,6 +39,7 @@ RUN python -m pip install --upgrade pip \
 COPY . .
 
 # ── Non-root user (امنیت) ─────────────────────────────────────────────────
+# /data ساخته می‌شه ولی به‌عنوان VOLUME اعلام نمی‌شه (Railway خودش mount می‌کنه)
 RUN groupadd --system --gid 1000 omid \
  && useradd  --system --uid 1000 --gid omid --create-home omid \
  && mkdir -p /data \
@@ -51,15 +47,10 @@ RUN groupadd --system --gid 1000 omid \
 
 USER omid
 
-# ── Volume (state persistence) ────────────────────────────────────────────
-# روی سرور باید mount بشه:  -v /host/path:/data
-VOLUME ["/data"]
-
 # ── Port ──────────────────────────────────────────────────────────────────
 EXPOSE 8000
 
 # ── Healthcheck ───────────────────────────────────────────────────────────
-# از پایتون استفاده می‌کنیم چون curl توی slim image پیش‌فرض نیست
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request, sys; \
         sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
