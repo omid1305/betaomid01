@@ -2,11 +2,11 @@
 # ══════════════════════════════════════════════════════════════════════════
 # VMess AEAD Relay — سازگار با Xray-core 24/25/26
 #
-#   ✔ KDF chain مطابق دقیق Xray-core (HMAC chain با salt "VMess AEAD KDF")
-#   ✔ AuthID = KDF16(uuid_bytes, nil, timeBytes)  ← دو path element!
-#   ✔ cmdKey = MD5(uuid_bytes + "c48619fe-8f02-3309-bc9d-5f32e4617ffd")
-#   ✔ salt strings عیناً مطابق Xray
-#   ✔ Response header با AEAD envelope (68 bytes)
+#   ✔ AuthID بهصورت AES-ECB رمزگشایی میشود (نه HMAC)
+#   ✔ cmdKey با پسوند صحیح 'c48619fe-8f02-49e0-b9e9-edf763e17e21'
+#   ✔ connNonce (۸ بایت) در مشتقسازی کلید Length/Payload استفاده میشود
+#   ✔ Salt strings عیناً مطابق Xray-core
+#   ✔ Response header با AEAD envelope (۶۸ بایت)
 #   ✔ throttle + check_and_use مشترک با VLESS
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -18,10 +18,12 @@ import struct
 import time
 import logging
 import socket
+import zlib
 from uuid import UUID
 
 from fastapi import WebSocket, WebSocketDisconnect
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import main
 from relay_vless import check_and_use
@@ -34,22 +36,24 @@ TCP_CONNECT_TIMEOUT = 10.0
 FIRST_FRAME_TIMEOUT = 15.0
 
 # ══════════════════════════════════════════════════════════════════════════
-# Salt strings — عیناً مطابق Xray-core (به فاصله‌ها و آندرلاین‌ها دقت کن)
+# Salt strings — عیناً مطابق Xray-core
 # ══════════════════════════════════════════════════════════════════════════
 KDF_SALT = b"VMess AEAD KDF"
 
+SALT_AUTH_ID_ENCRYPTION = b"AES Auth ID Encryption"
+
 SALT_REQ_LEN_KEY = b"VMess Header AEAD Key_Length"
-SALT_REQ_LEN_IV  = b"VMess Header AEAD IV_Length"
+SALT_REQ_LEN_IV  = b"VMess Header AEAD Nonce_Length"
 SALT_REQ_PAY_KEY = b"VMess Header AEAD Key"
-SALT_REQ_PAY_IV  = b"VMess Header AEAD IV"
+SALT_REQ_PAY_IV  = b"VMess Header AEAD Nonce"
 
 SALT_RESP_LEN_KEY = b"AEAD Resp Header Len Key"
 SALT_RESP_LEN_IV  = b"AEAD Resp Header Len IV"
 SALT_RESP_PAY_KEY = b"AEAD Resp Header Key"
 SALT_RESP_PAY_IV  = b"AEAD Resp Header IV"
 
-# ثابت مشهور Xray برای cmdKey
-CMD_KEY_SUFFIX = b"c48619fe-8f02-3309-bc9d-5f32e4617ffd"
+# پسوند صحیح cmdKey — مقدار اشتباه در کد قبلی اصلاح شد
+CMD_KEY_SUFFIX = b"c48619fe-8f02-49e0-b9e9-edf763e17e21"
 
 # sec_type values
 SEC_NONE = 5
@@ -75,8 +79,15 @@ def _kdf16(key: bytes, *paths: bytes) -> bytes:
     return _kdf(key, *paths)[:16]
 
 
+def _aes_ecb_decrypt(key: bytes, data: bytes) -> bytes:
+    """رمزگشایی AES-ECB — برای AuthID استفاده میشود."""
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
+    decryptor = cipher.decryptor()
+    return decryptor.update(data) + decryptor.finalize()
+
+
 # ══════════════════════════════════════════════════════════════════════════
-# Decode request header
+# Decode request header — منطق اصلاحشده
 # ══════════════════════════════════════════════════════════════════════════
 def _decode_request_header(data: bytes, user_uuid: str):
     """Parse VMess AEAD request header.
@@ -87,57 +98,86 @@ def _decode_request_header(data: bytes, user_uuid: str):
     except ValueError:
         return None, "فرمت UUID نامعتبر است"
 
-    if len(data) < 34:  # 16 (authID) + 2 (enc len) + 16 (tag)
-        return None, "داده‌ی هدر کافی نیست"
+    # minimum: AuthID(16) + enc_len(18) + connNonce(8) = 42
+    if len(data) < 42:
+        return None, "دادهی هدر کافی نیست"
 
     auth_id = data[:16]
 
     # ══════════════════════════════════════════════════════════════════
-    # AuthID validation — کلید موفقیت همین‌جاست
-    #   Xray: AuthID = KDF16(uuid_bytes, nil, timeBytes)
-    #   → دو path element: nil (خالی) + 8-byte big-endian timestamp
+    # تأیید اعتبار AuthID با AES-ECB
+    #   AuthID = AES-ECB-encrypt(cmdKey_derived, timestamp||random||CRC32)
+    #   → ما باید رمزگشایی کنیم و timestamp را بررسی کنیم
     # ══════════════════════════════════════════════════════════════════
-    now = int(time.time())
-    valid = False
-    for delta in range(-120, 121):
-        t = now + delta
-        t_bytes = struct.pack(">Q", t)
-        expected = _kdf16(u_bytes, b"", t_bytes)   # ← b"" حیاتی است
-        if hmac.compare_digest(expected, auth_id):
-            valid = True
-            break
-
-    if not valid:
-        return None, "اعتبارسنجی Auth ID ناموفق بود"
-
-    # ── cmdKey = MD5(uuid_bytes + suffix) ──
     cmd_key = hashlib.md5(u_bytes + CMD_KEY_SUFFIX).digest()
 
-    # ── Length AEAD key/IV ──
-    len_key = _kdf16(cmd_key, auth_id, SALT_REQ_LEN_KEY)
-    len_iv  = _kdf(cmd_key, auth_id, SALT_REQ_LEN_IV)[:12]
+    # مشتقسازی کلید AES برای رمزگشایی AuthID
+    auth_id_key = _kdf16(cmd_key, SALT_AUTH_ID_ENCRYPTION)
 
     try:
-        dec_len = AESGCM(len_key).decrypt(len_iv, data[16:34], None)
+        decrypted = _aes_ecb_decrypt(auth_id_key, auth_id)
+    except Exception as e:
+        return None, f"خطا در رمزگشایی Auth ID: {e}"
+
+    if len(decrypted) != 16:
+        return None, "Auth ID رمزگشاییشده طول نامعتبر دارد"
+
+    # ساختار: timestamp (8B BE) + random (4B) + CRC32 (4B)
+    ts_bytes = decrypted[:8]
+    crc_bytes = decrypted[12:16]
+
+    # بررسی CRC32 — CRC32 روی ۱۲ بایت اول
+    expected_crc = zlib.crc32(decrypted[:12]) & 0xFFFFFFFF
+    actual_crc = struct.unpack(">I", crc_bytes)[0]
+    if expected_crc != actual_crc:
+        return None, "CRC32 Auth ID نامعتبر است"
+
+    # بررسی timestamp — باید در بازهٔ ±۱۲۰ ثانیه باشد
+    ts = struct.unpack(">Q", ts_bytes)[0]
+    now = int(time.time())
+    if abs(now - ts) > 120:
+        return None, f"timestamp خارج از محدوده (delta={now - ts}s)"
+
+    # ══════════════════════════════════════════════════════════════════
+    # خواندن Encrypted Length (18 بایت = 2 cipher + 16 tag)
+    # ══════════════════════════════════════════════════════════════════
+    enc_len_blob = data[16:34]
+
+    # ══════════════════════════════════════════════════════════════════
+    # خواندن connNonce (8 بایت)
+    # ══════════════════════════════════════════════════════════════════
+    conn_nonce = data[34:42]
+
+    # ── Length AEAD key/IV ──
+    # key = KDF16(cmdKey, "VMess Header AEAD Key_Length", authID, connNonce)
+    # iv  = KDF(cmdKey, "VMess Header AEAD Nonce_Length", authID, connNonce)[:12]
+    len_key = _kdf16(cmd_key, SALT_REQ_LEN_KEY, auth_id, conn_nonce)
+    len_iv  = _kdf(cmd_key, SALT_REQ_LEN_IV, auth_id, conn_nonce)[:12]
+
+    try:
+        dec_len = AESGCM(len_key).decrypt(len_iv, enc_len_blob, auth_id)
         header_len = struct.unpack(">H", dec_len)[0]
     except Exception as e:
         return None, f"خطا در رمزگشایی طول هدر: {e}"
 
-    if len(data) < 34 + header_len + 16:
-        return None, "بدنه‌ی هدر ناقص است"
+    # offset بعد از connNonce
+    payload_start = 42
+    if len(data) < payload_start + header_len + 16:
+        return None, "بدنهی هدر ناقص است"
 
     # ── Payload AEAD key/IV ──
-    payload_ct = data[34 : 34 + header_len + 16]
-    header_end = 34 + header_len + 16
+    payload_ct = data[payload_start : payload_start + header_len + 16]
+    header_end = payload_start + header_len + 16
 
-    pay_key = _kdf16(cmd_key, auth_id, SALT_REQ_PAY_KEY)
-    pay_iv  = _kdf(cmd_key, auth_id, SALT_REQ_PAY_IV)[:12]
+    pay_key = _kdf16(cmd_key, SALT_REQ_PAY_KEY, auth_id, conn_nonce)
+    pay_iv  = _kdf(cmd_key, SALT_REQ_PAY_IV, auth_id, conn_nonce)[:12]
 
     try:
-        payload = AESGCM(pay_key).decrypt(pay_iv, payload_ct, None)
+        payload = AESGCM(pay_key).decrypt(pay_iv, payload_ct, auth_id)
     except Exception as e:
-        return None, f"خطا در رمزگشایی بدنه‌ی هدر: {e}"
+        return None, f"خطا در رمزگشایی بدنهی هدر: {e}"
 
+    # payload = Ver(1) BodyIV(16) BodyKey(16) RespV(1) Opt(1) Sec(1) Rsv(1) Cmd(1) Port(2) AddrType(1) Addr(N) Padding(0-15) FNV1a(4)
     if len(payload) < 41:
         return None, "ساختار هدر معتبر نیست"
 
@@ -171,6 +211,7 @@ def _decode_request_header(data: bytes, user_uuid: str):
     return {
         "cmd_key": cmd_key,
         "auth_id": auth_id,
+        "conn_nonce": conn_nonce,
         "ver": ver,
         "req_iv": req_iv,
         "req_key": req_key,
@@ -199,24 +240,24 @@ def _build_response_header(info: dict) -> bytes:
     """
     cmd_key = info["cmd_key"]
     auth_id = info["auth_id"]
+    conn_nonce = info["conn_nonce"]
     res_check = info["res_check"]
 
-    # Fresh IV/key برای body encryption (در sec_type=NONE استفاده نمی‌شه،
-    # ولی Xray انتظار داره که توی header باشن)
+    # Fresh IV/key برای body encryption
     resp_iv  = secrets.token_bytes(16)
     resp_key = secrets.token_bytes(16)
 
     plaintext = bytes([res_check, 0x00]) + resp_iv + resp_key
 
-    # Response AEAD keys
-    resp_len_key = _kdf16(cmd_key, auth_id, SALT_RESP_LEN_KEY)
-    resp_len_iv  = _kdf(cmd_key, auth_id, SALT_RESP_LEN_IV)[:12]
-    resp_pay_key = _kdf16(cmd_key, auth_id, SALT_RESP_PAY_KEY)
-    resp_pay_iv  = _kdf(cmd_key, auth_id, SALT_RESP_PAY_IV)[:12]
+    # Response AEAD keys — با connNonce
+    resp_len_key = _kdf16(cmd_key, SALT_RESP_LEN_KEY, auth_id, conn_nonce)
+    resp_len_iv  = _kdf(cmd_key, SALT_RESP_LEN_IV, auth_id, conn_nonce)[:12]
+    resp_pay_key = _kdf16(cmd_key, SALT_RESP_PAY_KEY, auth_id, conn_nonce)
+    resp_pay_iv  = _kdf(cmd_key, SALT_RESP_PAY_IV, auth_id, conn_nonce)[:12]
 
     length_bytes = struct.pack(">H", len(plaintext))
-    enc_len = AESGCM(resp_len_key).encrypt(resp_len_iv, length_bytes, None)
-    enc_pay = AESGCM(resp_pay_key).encrypt(resp_pay_iv, plaintext, None)
+    enc_len = AESGCM(resp_len_key).encrypt(resp_len_iv, length_bytes, auth_id)
+    enc_pay = AESGCM(resp_pay_key).encrypt(resp_pay_iv, plaintext, auth_id)
 
     return enc_len + enc_pay
 
@@ -304,7 +345,7 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
 
     if not main.is_ip_allowed(link, real_uid, ip):
         logger.warning(f"🚫 VMess rejected uuid={uuid[:8]}… ip={ip} (ip limit)")
-        await websocket.close(code=4001, reason="محدودیت تعداد آی‌پِی هم‌زمان")
+        await websocket.close(code=4001, reason="محدودیت تعداد آیپِی همزمان")
         return
 
     main.connections[conn_id] = {
@@ -344,7 +385,6 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
         if conn_id in main.connections:
             main.connections[conn_id]["bytes"] += len(first_frame)
 
-        # ── Check body encryption type (فقط NONE/ZERO پشتیبانی می‌شه) ──
         if header_info["sec_type"] not in (SEC_NONE, SEC_ZERO):
             logger.warning(
                 f"⚠️  VMess unsupported sec_type={header_info['sec_type']} "
@@ -371,7 +411,6 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
             f"sec_type={header_info['sec_type']} opt={header_info['opt']}"
         )
 
-        # ── Send trailing data from first frame to target ──
         if header_info["body_init"]:
             writer.write(header_info["body_init"])
             await writer.drain()
