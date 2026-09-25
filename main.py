@@ -4,6 +4,7 @@ import json
 import os
 import hashlib
 import secrets
+import string
 import time
 import aiofiles
 from contextlib import asynccontextmanager
@@ -215,7 +216,7 @@ TELEGRAM = {
 }
 
 # پروتکل‌های پشتیبانی‌شده برای هر کانفیگ
-PROTOCOLS = ("vless-ws", "vmess-ws", "xhttp-packet-up", "xhttp-stream-up", "xhttp-stream-one")
+PROTOCOLS = ("vless-ws", "vmess-ws", "trojan-ws", "xhttp-packet-up", "xhttp-stream-up", "xhttp-stream-one")
 DEFAULT_PROTOCOL = "vless-ws"
 
 # Fingerprint (uTLS) های قابل انتخاب برای هر کانفیگ
@@ -411,16 +412,72 @@ def build_vless_remark(link: dict) -> str:
         f"📅{expire_date}"
     )
 
+def generate_trojan_password(length: int = 32) -> str:
+    """Generate a URL-safe Trojan password for a newly-created config."""
+    alphabet = string.ascii_letters + string.digits + "-_"
+    return "".join(secrets.choice(alphabet) for _ in range(max(16, int(length))))
+
+
+def generate_trojan_link(
+    password: str,
+    host: str,
+    remark: str = "Gateway",
+    uuid: str | None = None,
+    port: int | None = None,
+    fingerprint: str | None = None,
+    alpn: str | None = None,
+) -> str:
+    """Generate a Trojan over WebSocket + TLS share link.
+
+    The UUID is used only to make the WS path unique inside this panel;
+    Trojan itself authenticates with the password.
+    """
+    port_val = port or DEFAULT_PORT
+    if not (MIN_PORT <= port_val <= MAX_PORT):
+        port_val = DEFAULT_PORT
+
+    path = f"/trojan/{uuid}" if uuid else "/trojan"
+    fp = (fingerprint or DEFAULT_FINGERPRINT).strip() or DEFAULT_FINGERPRINT
+    alpn_val = (alpn or "").strip() or "http/1.1"
+
+    params = {
+        "security": "tls",
+        "type": "ws",
+        "host": host,
+        "path": path,
+        "sni": host,
+        "fp": fp,
+        "alpn": alpn_val,
+    }
+    query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
+    return f"trojan://{quote(password)}@{host}:{port_val}?{query}#{quote(remark)}"
+
+
 def generate_vmess_link(
     uuid: str,
     host: str,
     remark: str = "Gateway",
     port: int | None = None,
+    fingerprint: str | None = None,
+    alpn: str | None = None,
 ) -> str:
-    """تولید ساختار استاندارد vmess:// پایه Base64"""
+    """Generate a VMess WS + TLS share-link with automatic TLS SNI.
+
+    The SNI is always set to the same hostname used by the panel for the
+    generated link. Fingerprint/ALPN follow the panel defaults unless a
+    per-link value is stored.
+    """
     port_val = port or DEFAULT_PORT
     if not (MIN_PORT <= port_val <= MAX_PORT):
         port_val = DEFAULT_PORT
+
+    fp = (fingerprint or DEFAULT_FINGERPRINT).strip() or DEFAULT_FINGERPRINT
+    if fp not in FINGERPRINTS:
+        fp = DEFAULT_FINGERPRINT
+
+    alpn_val = (alpn or "").strip() or DEFAULT_ALPN_BY_PROTOCOL.get(
+        "vmess-ws", "http/1.1"
+    )
 
     vmess_config = {
         "v": "2",
@@ -435,24 +492,59 @@ def generate_vmess_link(
         "host": host,
         "path": f"/vmess/{uuid}",
         "tls": "tls",
+        # TLS parameters: automatically mirror the panel hostname.
+        "sni": host,
+        "alpn": alpn_val,
+        "fp": fp,
+        "insecure": "0",
+        "vcn": "",
+        "pcs": "",
     }
-    json_bytes = json.dumps(vmess_config, ensure_ascii=False).encode("utf-8")
+
+    json_bytes = json.dumps(
+        vmess_config,
+        ensure_ascii=False,
+        indent=2,
+        separators=(",", ": "),
+    ).encode("utf-8")
     b64_encoded = base64.b64encode(json_bytes).decode("utf-8")
     return f"vmess://{b64_encoded}"
 
 def vless_link_for_link(link: dict, uid: str, host: str) -> str:
+    """Return the correct share link for the stored protocol.
+
+    Historical endpoints still call this function, so its name is kept for
+    compatibility even though it now handles VLESS, VMess and Trojan.
+    """
     proto = link.get("protocol", DEFAULT_PROTOCOL)
+    remark = build_vless_remark(link)
+
     if proto == "vmess-ws":
         return generate_vmess_link(
             uid,
             host,
-            remark=build_vless_remark(link),
+            remark=remark,
             port=link.get("port"),
+            fingerprint=link.get("fingerprint"),
+            alpn=link.get("alpn"),
         )
+
+    if proto == "trojan-ws":
+        password = (link.get("password") or uid).strip()
+        return generate_trojan_link(
+            password=password,
+            host=host,
+            remark=remark,
+            uuid=uid,
+            port=link.get("port"),
+            fingerprint=link.get("fingerprint"),
+            alpn=link.get("alpn"),
+        )
+
     return generate_vless_link(
         uid,
         host,
-        remark=build_vless_remark(link),
+        remark=remark,
         protocol=proto,
         fingerprint=link.get("fingerprint"),
         alpn=link.get("alpn"),
@@ -1045,6 +1137,7 @@ async def make_link(
     if not (MIN_PORT <= port <= MAX_PORT):
         port = DEFAULT_PORT
     uid = generate_uuid()
+    trojan_password = generate_trojan_password() if protocol == "trojan-ws" else ""
     async with LINKS_LOCK:
         LINKS[uid] = {
             "label": (label or "لینک جدید").strip()[:60] or "لینک جدید",
@@ -1057,6 +1150,7 @@ async def make_link(
             "is_default": False,
             "sub_id": sub_id,
             "protocol": protocol,
+            "password": trojan_password,
             "fingerprint": fingerprint,
             "alpn": (alpn or "").strip()[:100],
             "port": port,
@@ -1345,9 +1439,11 @@ async def delete_link(uid: str, _=Depends(require_auth)):
 def _register_ws_route():
     from relay_vless import websocket_tunnel
     from relay_vmess import websocket_tunnel_vmess
-    
+    from relay_trojan import websocket_tunnel_trojan
+
     app.add_api_websocket_route("/ws/{uuid}", websocket_tunnel)
-    app.add_api_websocket_route("/vmess/{uuid}", websocket_tunnel_vmess) # ← مسیر اختصاصی VMess
+    app.add_api_websocket_route("/vmess/{uuid}", websocket_tunnel_vmess)
+    app.add_api_websocket_route("/trojan/{uuid}", websocket_tunnel_trojan)
 
 _register_ws_route()
 
@@ -1574,6 +1670,7 @@ def _serialize_link_for_admin(link: dict, uid: str, host: str) -> dict:
         "expired": is_link_expired(link),
         "allowed": is_link_allowed(link),
         "protocol": proto,
+        "trojan_password": link.get("password", "") if proto == "trojan-ws" else "",
         "used_bytes": link.get("used_bytes", 0),
         "used_fmt": fmt_bytes(link.get("used_bytes", 0)),
         "limit_bytes": link.get("limit_bytes", 0),

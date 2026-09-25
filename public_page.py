@@ -1182,6 +1182,8 @@ function protoClass(p){
 
 function protoName(p){
   if(!p||p==="vless-ws") return "VLESS · WS";
+  if(p==="vmess-ws") return "VMess · WebSocket";
+  if(p==="trojan-ws") return "Trojan · WebSocket";
   if(p==="xhttp-packet-up") return "XHTTP · packet-up";
   if(p==="xhttp-stream-up") return "XHTTP · stream-up";
   if(p==="xhttp-stream-one") return "XHTTP ULTRA";
@@ -1790,10 +1792,12 @@ function switchTab(name){
 }
 
 function protoName(p){
-  if(!p||p==="vless-ws") return "VLESS · WebSocket";
+  if(!p||p==="vless-ws") return "VLESS · WS";
+  if(p==="vmess-ws") return "VMess · WebSocket";
+  if(p==="trojan-ws") return "Trojan · WebSocket";
   if(p==="xhttp-packet-up") return "XHTTP · packet-up";
   if(p==="xhttp-stream-up") return "XHTTP · stream-up";
-  if(p==="xhttp-stream-one") return "XHTTP Ultra";
+  if(p==="xhttp-stream-one") return "XHTTP ULTRA";
   return p;
 }
 
@@ -2477,9 +2481,11 @@ function daysLeft(iso){
 
 function protoName(p){
   if(!p||p==="vless-ws") return "VLESS · WS";
+  if(p==="vmess-ws") return "VMess · WebSocket";
+  if(p==="trojan-ws") return "Trojan · WebSocket";
   if(p==="xhttp-packet-up") return "XHTTP · packet-up";
   if(p==="xhttp-stream-up") return "XHTTP · stream-up";
-  if(p==="xhttp-stream-one") return "XHTTP Ultra";
+  if(p==="xhttp-stream-one") return "XHTTP ULTRA";
   return p;
 }
 function protoClass(p){
