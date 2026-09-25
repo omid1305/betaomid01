@@ -72,7 +72,14 @@ VMESS_CMD_KEY_SUFFIX = b"c48619fe-8f02-49e0-b9e9-edf763e17e21"
 SEC_AES_GCM = 3
 SEC_CHACHA20_POLY1305 = 4
 SEC_NONE = 5
-SEC_ZERO = 0
+SEC_ZERO = 6
+
+# VMess request option flags.
+OPT_CHUNK_STREAM = 1
+OPT_CONNECTION_REUSE = 2
+OPT_CHUNK_MASKING = 4
+OPT_GLOBAL_PADDING = 8
+OPT_AUTHENTICATED_LENGTH = 16
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -414,146 +421,289 @@ def _build_response_header(info: dict) -> bytes:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VMess body AEAD
+# ══════════════════════════════════════════════════════════════════════════════
+# VMess body framing / AEAD
 # ══════════════════════════════════════════════════════════════════════════════
 
-class _BodyCipher:
-    """VMess body chunk codec for AES-GCM / ChaCha20-Poly1305."""
+class _ShakeReader:
+    """SHAKE-128 reader matching Xray's streaming size-mask generator."""
 
-    __slots__ = ("security", "key", "iv", "_counter", "_aead")
+    __slots__ = ("_shake", "_offset")
 
-    def __init__(self, security: int, key: bytes, iv: bytes):
+    def __init__(self, nonce: bytes):
+        self._shake = hashlib.shake_128(nonce)
+        self._offset = 0
+
+    def read(self, n: int) -> bytes:
+        if n <= 0:
+            return b""
+        end = self._offset + n
+        digest = self._shake.digest(end)
+        out = digest[self._offset:end]
+        self._offset = end
+        return out
+
+    def read_u16(self) -> int:
+        return struct.unpack(">H", self.read(2))[0]
+
+    def snapshot(self) -> int:
+        return self._offset
+
+    def restore(self, offset: int) -> None:
+        self._offset = offset
+
+
+class _VMessBodyFramer:
+    """
+    Xray-compatible VMess body framing:
+      - chunk-stream framing
+      - SHAKE-128 chunk masking
+      - global padding (0..63 bytes)
+      - authenticated length
+      - AES-128-GCM / ChaCha20-Poly1305
+      - NONE/ZERO raw or chunked bodies
+    """
+
+    __slots__ = (
+        "security", "key", "iv", "option", "chunk_stream",
+        "chunk_masking", "global_padding", "authenticated_length",
+        "shake", "payload_aead", "length_aead", "length_key", "length_iv",
+        "payload_counter", "length_counter", "buffer", "max_chunk",
+    )
+
+    def __init__(self, security: int, key: bytes, iv: bytes, option: int,
+                 *, max_chunk: int = 16 * 1024,
+                 length_key: bytes | None = None,
+                 length_iv: bytes | None = None):
         self.security = security
         self.key = key
-        self.iv = iv
-        self._counter = 0
+        self.iv = iv[:16]
+        self.option = option
+        self.chunk_stream = bool(option & OPT_CHUNK_STREAM)
+        self.chunk_masking = bool(option & OPT_CHUNK_MASKING)
+        self.global_padding = bool(option & OPT_GLOBAL_PADDING)
+        self.authenticated_length = bool(option & OPT_AUTHENTICATED_LENGTH)
+        self.shake = _ShakeReader(self.iv) if (
+            self.chunk_masking or self.global_padding
+        ) else None
+        self.payload_aead = None
+        self.length_aead = None
+        # Xray uses requestBodyKey/requestBodyIV for authenticated chunk
+        # length in BOTH directions, while payload AEAD uses the directional
+        # body key/IV.
+        self.length_key = length_key if length_key is not None else key
+        self.length_iv = (length_iv if length_iv is not None else iv)[:16]
+        self.payload_counter = 0
+        self.length_counter = 0
+        self.buffer = bytearray()
+        self.max_chunk = max(1024, min(int(max_chunk), 32768))
 
-        if len(key) != 16 or len(iv) < 12:
-            raise ValueError("invalid VMess body key/iv length")
+        if self.global_padding and not self.chunk_masking:
+            raise ValueError("VMess global padding requires chunk masking")
 
         if security == SEC_AES_GCM:
-            self._aead = AESGCM(key)
+            self.payload_aead = AESGCM(key)
         elif security == SEC_CHACHA20_POLY1305:
-            # Xray derives a 32-byte ChaCha20-Poly1305 key from the 16-byte
-            # session key. This matches GenerateChacha20Poly1305Key.
-            self._aead = ChaCha20Poly1305(_chacha_key(key))
-        else:
-            self._aead = None
+            self.payload_aead = ChaCha20Poly1305(_chacha_key(key))
+        elif security not in (SEC_NONE, SEC_ZERO):
+            raise ValueError(f"unsupported VMess security: {security}")
 
-    def _nonce(self) -> bytes:
-        # Xray's GenerateChunkNonce copies the IV and overwrites the first
-        # two bytes with the big-endian record counter.
+        if self.authenticated_length:
+            if security == SEC_AES_GCM:
+                self.length_aead = AESGCM(_kdf16(self.length_key, b"auth_len"))
+            elif security == SEC_CHACHA20_POLY1305:
+                self.length_aead = ChaCha20Poly1305(
+                    _chacha_key(_kdf16(self.length_key, b"auth_len"))
+                )
+            else:
+                raise ValueError("authenticated length requires AEAD security")
+
+    @property
+    def overhead(self) -> int:
+        return 16 if self.security in (SEC_AES_GCM, SEC_CHACHA20_POLY1305) else 0
+
+    def _nonce(self, counter: int) -> bytes:
         nonce = bytearray(self.iv[:12])
-        struct.pack_into(">H", nonce, 0, self._counter & 0xFFFF)
-        self._counter = (self._counter + 1) & 0xFFFF
+        struct.pack_into(">H", nonce, 0, counter & 0xFFFF)
         return bytes(nonce)
 
-    def seal(self, plaintext: bytes) -> bytes:
-        if self.security in (SEC_NONE, SEC_ZERO):
-            return plaintext
-        return self._aead.encrypt(self._nonce(), plaintext, None)
+    def _length_nonce(self, counter: int) -> bytes:
+        nonce = bytearray(self.length_iv[:12])
+        struct.pack_into(">H", nonce, 0, counter & 0xFFFF)
+        return bytes(nonce)
 
-    def open(self, ciphertext: bytes) -> bytes:
+    def _next_padding_len(self) -> int:
+        if not self.global_padding:
+            return 0
+        return self.shake.read_u16() % 64
+
+    def _next_size_mask(self) -> int:
+        return self.shake.read_u16() if self.chunk_masking else 0
+
+    def _seal_payload(self, plain: bytes) -> bytes:
         if self.security in (SEC_NONE, SEC_ZERO):
-            return ciphertext
-        return self._aead.decrypt(self._nonce(), ciphertext, None)
+            return plain
+        try:
+            encrypted = self.payload_aead.encrypt(
+                self._nonce(self.payload_counter), plain, None
+            )
+        except Exception as exc:
+            raise ValueError(f"VMess body encryption failed: {exc}") from exc
+        self.payload_counter = (self.payload_counter + 1) & 0xFFFF
+        return encrypted
+
+    def _open_payload(self, encrypted: bytes) -> bytes:
+        if self.security in (SEC_NONE, SEC_ZERO):
+            return encrypted
+        try:
+            plain = self.payload_aead.decrypt(
+                self._nonce(self.payload_counter), encrypted, None
+            )
+        except Exception as exc:
+            raise ValueError(f"VMess body decryption failed: {exc}") from exc
+        self.payload_counter = (self.payload_counter + 1) & 0xFFFF
+        return plain
+
+    def _encode_size(self, payload_and_padding: int) -> bytes:
+        if payload_and_padding < self.overhead:
+            raise ValueError("invalid VMess encoded chunk size")
+
+        if self.authenticated_length:
+            plain = struct.pack(
+                ">H", (payload_and_padding - self.overhead) & 0xFFFF
+            )
+            encrypted = self.length_aead.encrypt(
+                self._length_nonce(self.length_counter), plain, None
+            )
+            self.length_counter = (self.length_counter + 1) & 0xFFFF
+            return encrypted
+
+        value = payload_and_padding
+        if self.chunk_masking:
+            value ^= self._next_size_mask()
+        return struct.pack(">H", value)
+
+    def _decode_size(self, encoded: bytes) -> int:
+        if self.authenticated_length:
+            if len(encoded) != 18:
+                raise ValueError("invalid authenticated VMess size field")
+            try:
+                plain = self.length_aead.decrypt(
+                    self._length_nonce(self.length_counter), encoded, None
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"VMess authenticated length decrypt failed: {exc}"
+                ) from exc
+            self.length_counter = (self.length_counter + 1) & 0xFFFF
+            if len(plain) != 2:
+                raise ValueError("invalid authenticated VMess length")
+            return struct.unpack(">H", plain)[0] + self.overhead
+
+        if len(encoded) != 2:
+            raise ValueError("invalid VMess size field")
+        value = struct.unpack(">H", encoded)[0]
+        if self.chunk_masking:
+            value ^= self._next_size_mask()
+        return value
+
+    def encode(self, data: bytes) -> list[bytes]:
+        if not data:
+            return []
+        if not self.chunk_stream:
+            return [self._seal_payload(data)]
+
+        result = []
+        pos = 0
+        while pos < len(data):
+            part = data[pos:pos + self.max_chunk]
+            pos += len(part)
+            padding_len = self._next_padding_len()
+            encrypted = self._seal_payload(part)
+            total_len = len(encrypted) + padding_len
+            if total_len > 0xFFFF:
+                raise ValueError("VMess chunk exceeds uint16 length")
+            size = self._encode_size(total_len)
+            padding = secrets.token_bytes(padding_len) if padding_len else b""
+            result.append(size + encrypted + padding)
+        return result
+
+    def feed(self, data: bytes) -> list[bytes]:
+        if not data:
+            return []
+        if not self.chunk_stream:
+            return [self._open_payload(data)]
+
+        self.buffer.extend(data)
+        result = []
+        size_len = 18 if self.authenticated_length else 2
+
+        while True:
+            if len(self.buffer) < size_len:
+                break
+
+            shake_offset = self.shake.snapshot() if self.shake else 0
+            payload_counter = self.payload_counter
+            length_counter = self.length_counter
+
+            padding_len = self._next_padding_len()
+            encoded_size = bytes(self.buffer[:size_len])
+            size = self._decode_size(encoded_size)
+
+            if size < self.overhead + padding_len:
+                raise ValueError("VMess chunk size smaller than padding/overhead")
+
+            total = size_len + size
+            if len(self.buffer) < total:
+                if self.shake:
+                    self.shake.restore(shake_offset)
+                self.payload_counter = payload_counter
+                self.length_counter = length_counter
+                break
+
+            del self.buffer[:size_len]
+            framed = bytes(self.buffer[:size])
+            del self.buffer[:size]
+
+            encrypted = framed[:-padding_len] if padding_len else framed
+            if len(encrypted) == self.overhead:
+                continue
+
+            plain = self._open_payload(encrypted)
+            if plain:
+                result.append(plain)
+
+        return result
+
+    def finish(self) -> None:
+        if self.chunk_stream and self.buffer:
+            raise ValueError("incomplete VMess body chunk")
+
+
+class _BodyDecoder:
+    __slots__ = ("framer",)
+    def __init__(self, framer: _VMessBodyFramer):
+        self.framer = framer
+    def feed(self, data: bytes) -> list[bytes]:
+        return self.framer.feed(data)
+    def finish(self) -> None:
+        self.framer.finish()
+
+
+class _BodyEncoder:
+    __slots__ = ("framer",)
+    def __init__(self, framer: _VMessBodyFramer):
+        self.framer = framer
+    def encode(self, data: bytes) -> list[bytes]:
+        return self.framer.encode(data)
 
 
 def _chacha_key(key16: bytes) -> bytes:
-    """VMess ChaCha20-Poly1305 key: MD5(key) || MD5(MD5(key))."""
     first = hashlib.md5(key16).digest()
     second = hashlib.md5(first).digest()
     return first + second
 
 
-class _BodyDecoder:
-    """Incremental VMess body decoder across arbitrary WS frame boundaries."""
-
-    __slots__ = ("codec", "buffer")
-
-    def __init__(self, codec: _BodyCipher):
-        self.codec = codec
-        self.buffer = bytearray()
-
-    def feed(self, data: bytes) -> list[bytes]:
-        if data:
-            self.buffer.extend(data)
-
-        out: list[bytes] = []
-
-        if self.codec.security in (SEC_NONE, SEC_ZERO):
-            if self.buffer:
-                out.append(bytes(self.buffer))
-                self.buffer.clear()
-            return out
-
-        while True:
-            if len(self.buffer) < 2:
-                break
-
-            chunk_len = struct.unpack(">H", self.buffer[:2])[0]
-
-            # For encrypted VMess chunks, L includes the AEAD tag.
-            if chunk_len < 16:
-                raise ValueError("VMess encrypted chunk length too small")
-
-            total = 2 + chunk_len
-            if len(self.buffer) < total:
-                break
-
-            del self.buffer[:2]
-            ciphertext = bytes(self.buffer[:chunk_len])
-            del self.buffer[:chunk_len]
-
-            try:
-                plain = self.codec.open(ciphertext)
-            except Exception as exc:
-                raise ValueError(f"VMess body AEAD decrypt failed: {exc}") from exc
-
-            if len(plain) != chunk_len - 16:
-                raise ValueError("VMess decrypted chunk length mismatch")
-
-            if plain:
-                out.append(plain)
-
-        return out
-
-    def finish(self) -> None:
-        if self.codec.security in (SEC_NONE, SEC_ZERO):
-            self.buffer.clear()
-            return
-        if self.buffer:
-            raise ValueError("incomplete VMess body chunk")
-
-
-class _BodyEncoder:
-    """Incremental VMess body encoder."""
-
-    __slots__ = ("codec",)
-
-    def __init__(self, codec: _BodyCipher):
-        self.codec = codec
-
-    def encode(self, data: bytes) -> list[bytes]:
-        if not data:
-            return []
-
-        if self.codec.security in (SEC_NONE, SEC_ZERO):
-            return [data]
-
-        out: list[bytes] = []
-        pos = 0
-        while pos < len(data):
-            part = data[pos:pos + BODY_CHUNK_SIZE]
-            pos += len(part)
-            encrypted = self.codec.seal(part)
-            # VMess length field is the complete encrypted packet length,
-            # including the 16-byte AEAD authentication tag.
-            out.append(struct.pack(">H", len(encrypted)) + encrypted)
-        return out
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Socket tuning
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -751,18 +901,26 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
             f"sec_type={sec_type}"
         )
 
-        # ── Body codecs ──
-        request_codec = _BodyCipher(
+        # ── Body framing / codecs ──
+        request_framer = _VMessBodyFramer(
             sec_type,
             header_info["req_key"],
             header_info["req_iv"],
+            header_info["option"],
         )
         response_key = hashlib.sha256(header_info["req_key"]).digest()[:16]
         response_iv = hashlib.sha256(header_info["req_iv"]).digest()[:16]
-        response_codec = _BodyCipher(sec_type, response_key, response_iv)
+        response_framer = _VMessBodyFramer(
+            sec_type,
+            response_key,
+            response_iv,
+            header_info["option"],
+            length_key=header_info["req_key"],
+            length_iv=header_info["req_iv"],
+        )
 
-        request_decoder = _BodyDecoder(request_codec)
-        response_encoder = _BodyEncoder(response_codec)
+        request_decoder = _BodyDecoder(request_framer)
+        response_encoder = _BodyEncoder(response_framer)
 
         # ── Send any body records carried after the request header ──
         body_init = header_info["body_init"]
