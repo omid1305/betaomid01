@@ -4,8 +4,8 @@
 
 # 🚀 OMID-IRAN PANEL
 
-**پنل مدیریت کانفیگ VLESS/WS + XHTTP Ultra**
-**Modern VLESS/WS + XHTTP Ultra Management Panel**
+**پنل مدیریت کانفیگ VLESS / VMess / Trojan + WebSocket / XHTTP Ultra**
+**Modern VLESS / VMess / Trojan + WebSocket / XHTTP Ultra Management Panel**
 
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue?logo=docker)](https://github.com/omidiran-gaming/omidiran/pkgs/container/omidiran)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -31,16 +31,32 @@
 
 ### ✨ درباره‌ی پروژه
 
-**OMID-IRAN PANEL** یه پنل مدیریت کانفیگ مدرن، سریع و امن برای پروتکل‌های **VLESS/WebSocket** و **XHTTP Ultra (Siz10a)** هست. طراحی تمیز، رابط دوزبانه، و معماری مبتنی بر FastAPI باعث می‌شه هم برای استفاده‌ی شخصی و هم برای تیم‌های کوچک مناسب باشه.
+**OMID-IRAN PANEL** یه پنل مدیریت کانفیگ مدرن، سریع و امن برای پروتکل‌های **VLESS، VMess و Trojan** با ترنسپورت‌های **WebSocket** و **XHTTP Ultra (Siz10a)** هست. طراحی تمیز، رابط دوزبانه، و معماری مبتنی بر FastAPI باعث می‌شه هم برای استفاده‌ی شخصی و هم برای تیم‌های کوچک مناسب باشه.
 
 ### 🎯 ویژگی‌های کلیدی
 
 #### 🔐 هسته‌ی اتصال
-- **VLESS over WebSocket** — ترابرد پایدار و سازگار با CDN
-- **XHTTP Ultra (Siz10a)** — سه مود کامل: `packet-up`, `stream-up`, `stream-one`
+- **VLESS / WebSocket** — ترابرد پایدار و سازگار با CDN
+- **VMess / WebSocket** — Relay سازگار با VMess و TLS
+- **Trojan / WebSocket** — احراز هویت SHA-224 و Relay TCP/UDP
+- **XHTTP Ultra (Siz10a)** — دو مود عملیاتی: `packet-up`, `stream-up`
+- **۹ ترکیب کامل** — سه خانواده‌ی پروتکل × سه ترنسپورت:
+  - VLESS: `ws`, `xhttp-packet-up`, `xhttp-stream-up`
+  - VMess: `ws`, `xhttp-packet-up`, `xhttp-stream-up`
+  - Trojan: `ws`, `xhttp-packet-up`, `xhttp-stream-up`
 - **UUID Auth سخت‌گیرانه** — فقط UUIDهای ثبت‌شده اجازه‌ی اتصال دارند
 - **uTLS Fingerprint** — chrome, firefox, safari, ios, android, edge, 360, qq, random, randomized
 - **ALPN سفارشی** — قابل تنظیم برای هر کانفیگ (h2, http/1.1, ...)
+
+### 🌐 ماتریس پروتکل و ترنسپورت
+
+| پروتکل | WebSocket | XHTTP packet-up | XHTTP stream-up |
+|--------|-----------|-----------------|-----------------|
+| **VLESS** | ✅ | ✅ | ✅ |
+| **VMess** | ✅ | ✅ | ✅ |
+| **Trojan** | ✅ | ✅ | ✅ |
+
+این نسخه از هر ۹ ترکیب به‌صورت عملیاتی پشتیبانی می‌کند.
 
 #### 🎛️ مدیریت کانفیگ
 - سهمیه‌ی ترافیک (GB / MB / KB)
@@ -50,7 +66,7 @@
 - **Sub Token سفارشی** — به‌جای UUID طولانی
 - گروه‌بندی و Sub Groups
 - ریست مصرف · فعال/غیرفعال‌سازی · ویرایش کامل
-- QR Code استایل‌دار + لینک VLESS
+- QR Code استایل‌دار + لینک اشتراک متناسب با پروتکل (VLESS / VMess / Trojan)
 
 #### 👥 اشتراک‌گذاری
 - **Sub Group** — گروه‌بندی کانفیگ‌ها با URL یکتا
@@ -58,6 +74,7 @@
 - **رمز عبور اختیاری** برای صفحه‌ی پابلیک
 - لینک ساب همه‌کاره (`/sub-all`)
 - **Auto-import** به: v2rayNG, NekoBox, Sing-Box, Streisand, Shadowrocket, Clash, Hiddify, FoXray, v2rayN
+- تولید لینک صحیح برای هر ۹ ترکیب پروتکل/ترنسپورت
 
 #### 🎨 رابط کاربری
 - **دو تم کامل:**
@@ -202,7 +219,9 @@ omidiran/
 ├── pages.py               # LOGIN_HTML, DASHBOARD_HTML, i18n
 ├── public_page.py         # Public subscription pages
 ├── relay_vless.py         # VLESS/WS tunnel
-├── xhttp_siz10.py         # XHTTP Ultra transport
+├── relay_vmess.py         # VMess/WS relay
+├── relay_trojan.py        # Trojan/WS relay
+├── xhttp_siz10.py         # XHTTP Ultra transport for VLESS/VMess/Trojan
 ├── telegram_bot.py        # Telegram bot integration
 ├── requirements.txt
 ├── Dockerfile
@@ -252,10 +271,20 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 **OMID-IRAN PANEL** is a modern, fast, and secure management panel for **VLESS/WebSocket** and **XHTTP Ultra (Siz10a)** protocols. Clean design, bilingual UI, and FastAPI-based architecture make it suitable for both personal and small-team use.
 
+### 🌐 Protocol / Transport Matrix
+
+| Protocol | WebSocket | XHTTP packet-up | XHTTP stream-up |
+|----------|-----------|-----------------|-----------------|
+| **VLESS** | ✅ | ✅ | ✅ |
+| **VMess** | ✅ | ✅ | ✅ |
+| **Trojan** | ✅ | ✅ | ✅ |
+
+All 9 protocol/transport combinations are supported.
+
 ### 🎯 Key Features
 
 - 🔐 **VLESS/WebSocket** — stable, CDN-compatible transport
-- ⚡ **XHTTP Ultra** — 3 modes: `packet-up`, `stream-up`, `stream-one`
+- ⚡ **XHTTP Ultra** — 3 modes: `packet-up`, `stream-up`, `stream-up`
 - 🛡️ **Strict UUID Auth** — only registered UUIDs can connect
 - 🎭 **uTLS Fingerprint** — chrome, firefox, safari, ios, android, ...
 - 🎛️ **Full config management** — quota, expiry, IP/speed limits, sub tokens

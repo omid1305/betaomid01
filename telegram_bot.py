@@ -42,6 +42,7 @@ from main import (
     get_host, fmt_bytes, is_link_allowed, is_link_expired,
     logger, save_state,
     PROTOCOLS, DEFAULT_PROTOCOL, FINGERPRINTS, DEFAULT_FINGERPRINT,
+    normalize_protocol, split_protocol,
     DEFAULT_ALPN_BY_PROTOCOL, DEFAULT_PORT, DEFAULT_SPEED_LIMIT,
     MIN_PORT, MAX_PORT, parse_size_to_bytes, parse_speed_to_bytes,
     create_sub_group, set_link_sub, remove_sub_group,
@@ -133,19 +134,38 @@ _report_last_sent_date = ""      # YYYY-MM-DD
 # ═══════════════════════════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
-WIZARD_STEPS = ["label", "protocol", "fingerprint", "alpn", "port", "volume", "speed", "iplimit", "days"]
+WIZARD_STEPS = ["label", "protocol", "transport", "fingerprint", "alpn", "port", "volume", "speed", "iplimit", "days"]
 
 PROTOCOL_LABELS = {
     "vless-ws": "VLESS + WebSocket",
-    "xhttp-packet-up": "XHTTP (packet-up)",
-    "xhttp-stream-up": "XHTTP (stream-up)",
-    "xhttp-stream-one": "XHTTP (stream-one)",
+    "vless-xhttp-packet-up": "VLESS + XHTTP · packet-up",
+    "vless-xhttp-stream-up": "VLESS + XHTTP · stream-up",
+    "vmess-ws": "VMess + WebSocket",
+    "vmess-xhttp-packet-up": "VMess + XHTTP · packet-up",
+    "vmess-xhttp-stream-up": "VMess + XHTTP · stream-up",
+    "trojan-ws": "Trojan + WebSocket",
+    "trojan-xhttp-packet-up": "Trojan + XHTTP · packet-up",
+    "trojan-xhttp-stream-up": "Trojan + XHTTP · stream-up",
+}
+
+PROTOCOL_FAMILY_LABELS = {
+    "vless": "🔵 VLESS",
+    "vmess": "🟣 VMess",
+    "trojan": "🟠 Trojan",
+}
+
+TRANSPORT_LABELS = {
+    "ws": "🌐 WebSocket",
+    "packet-up": "⚡ XHTTP · packet-up",
+    "stream-up": "🚀 XHTTP · stream-up",
 }
 ALPN_PRESET_MAP = {"p1": "http/1.1", "p2": "h2,http/1.1", "p3": "h2"}
 _VOLUME_RE = re.compile(r"^([\d.]+)\s*(GB|MB|KB)?$", re.IGNORECASE)
 _SPEED_RE = re.compile(r"^([\d.]+)\s*(MBIT|MBPS|MB|KB)?$", re.IGNORECASE)
 
-def _protocol_label(p): return PROTOCOL_LABELS.get(p, p)
+def _protocol_label(p):
+    p = normalize_protocol(p)
+    return PROTOCOL_LABELS.get(p, p)
 def _fp_label(fp): return fp.capitalize()
 
 def _parse_volume_text(text):
@@ -554,8 +574,44 @@ def _wizard_cancel_kb():
     return {"inline_keyboard": [[{"text":"❌ انصراف","callback_data":"w:cancel"}]]}
 
 def _wizard_protocol_kb():
-    rows = [[{"text": _protocol_label(p), "callback_data": f"w:proto:{p}"}] for p in PROTOCOLS]
+    rows = [
+        [{"text": PROTOCOL_FAMILY_LABELS[family], "callback_data": f"w:family:{family}"}]
+        for family in ("vless", "vmess", "trojan")
+    ]
     rows.append([{"text":"❌ انصراف","callback_data":"w:cancel"}])
+    return {"inline_keyboard": rows}
+
+
+def _wizard_transport_kb(family: str):
+    rows = [
+        [{"text": TRANSPORT_LABELS[transport], "callback_data": f"w:transport:{family}:{transport}"}]
+        for transport in ("ws", "packet-up", "stream-up")
+    ]
+    rows.append([{"text":"⬅ خانواده پروتکل", "callback_data":"w:back:family"}])
+    rows.append([{"text":"❌ انصراف","callback_data":"w:cancel"}])
+    return {"inline_keyboard": rows}
+
+
+def _edit_protocol_family_kb(uid: str):
+    rows = [
+        [{"text": PROTOCOL_FAMILY_LABELS[family], "callback_data": f"epfamily:{family}:{uid}"}]
+        for family in ("vless", "vmess", "trojan")
+    ]
+    rows.append([{"text":"⬅ بازگشت", "callback_data":f"edit:{uid}"}])
+    return {"inline_keyboard": rows}
+
+
+def _edit_protocol_transport_kb(uid: str, family: str):
+    current = normalize_protocol(LINKS.get(uid, {}).get("protocol", DEFAULT_PROTOCOL))
+    cur_family, cur_transport = split_protocol(current)
+    rows = []
+    for transport in ("ws", "packet-up", "stream-up"):
+        mark = "✅ " if (family == cur_family and transport == cur_transport) else ""
+        rows.append([{
+            "text": mark + TRANSPORT_LABELS[transport],
+            "callback_data": f"eptrans:{family}:{transport}:{uid}"
+        }])
+    rows.append([{ "text":"⬅ خانواده پروتکل", "callback_data":f"e:protocol:{uid}" }])
     return {"inline_keyboard": rows}
 
 def _wizard_fp_kb():
@@ -654,7 +710,8 @@ def _wizard_prompt(step: str, data: dict) -> str:
     head = f"🧩 ساخت کانفیگ — {n}/{len(WIZARD_STEPS)}\n\n"
     m = {
         "label": "✏️ اسم کانفیگ:",
-        "protocol": "🌐 پروتکل:",
+        "protocol": "🌐 خانواده پروتکل:",
+        "transport": "🚚 ترنسپورت:",
         "fingerprint": "🖐 Fingerprint:",
         "alpn": "🔤 ALPN (یا تایپ کن):",
         "port": f"🔌 پورت ({MIN_PORT}-{MAX_PORT}):",
@@ -703,7 +760,7 @@ def _export_csv(only_uid: str | None = None) -> bytes:
     w = csv.writer(buf)
     w.writerow(["UUID","Label","Note","SubToken","Protocol","Fingerprint","ALPN","Port",
                 "LimitBytes","UsedBytes","IPLimit","SpeedLimitBytes",
-                "Active","ExpiresAt","CreatedAt","SubGroup","VLESSLink"])
+                "Active","ExpiresAt","CreatedAt","SubGroup","ShareLink"])
     host = get_host()
     items = [(only_uid, LINKS.get(only_uid))] if only_uid else LINKS.items()
     for uid, l in items:
@@ -904,8 +961,13 @@ async def _handle_message(msg: dict):
             data["label"] = text[:60] or "کانفیگ"
             pending["step"] = "protocol"
             await _send(chat_id, _wizard_prompt("protocol", data), _wizard_protocol_kb()); return
-        if step in ("protocol", "fingerprint"):
-            kb = _wizard_protocol_kb() if step == "protocol" else _wizard_fp_kb()
+        if step in ("protocol", "transport", "fingerprint"):
+            if step == "protocol":
+                kb = _wizard_protocol_kb()
+            elif step == "transport":
+                kb = _wizard_transport_kb(data.get("protocol_family", "vless"))
+            else:
+                kb = _wizard_fp_kb()
             await _send(chat_id, "از دکمه‌ها 👆", kb); return
         if step == "alpn":
             data["alpn"] = text[:100]
@@ -1209,9 +1271,9 @@ async def _handle_callback(cb: dict):
         if not l:
             await _answer_cb(cb_id, "پیدا نشد"); return
         host = get_host()
-        vless = vless_link_for_link(l, uid, host)
+        share_link = vless_link_for_link(l, uid, host)
         sub_url = _link_sub_url(l, uid)
-        msg = f"🔗 <b>{l.get('label')}</b>\n\n<code>{vless}</code>\n\nساب: <code>{sub_url}</code>"
+        msg = f"🔗 <b>{l.get('label')}</b>\n\n<code>{share_link}</code>\n\nساب: <code>{sub_url}</code>"
         sid = l.get("sub_id")
         if sid and sid in SUBS:
             msg += f"\n\n✨ گروه: <code>{_group_public_url(SUBS[sid])}</code>"
@@ -1401,6 +1463,48 @@ async def _handle_callback(cb: dict):
             await _edit(chat_id, message_id, "پیدا نشد.", _main_menu_kb()); return
         _pending[chat_id] = {"action":"edit_text","uid":uid,"field":"iplimit_custom"}
         await _edit(chat_id, message_id, "👥 عدد (0=نامحدود):", _edit_cancel_kb(uid)); return
+
+    # ── ویرایش: پروتکل/ترنسپورت ────────────────────────────────────────
+    if data.startswith("e:protocol:"):
+        uid = data.split(":", 2)[2]
+        if uid not in LINKS:
+            await _edit(chat_id, message_id, "پیدا نشد.", _main_menu_kb()); return
+        l = LINKS[uid]
+        await _edit(
+            chat_id, message_id,
+            f"🌐 پروتکل فعلی: <b>{_protocol_label(l.get('protocol', DEFAULT_PROTOCOL))}</b>\n\nخانواده جدید رو انتخاب کن:",
+            _edit_protocol_family_kb(uid),
+        ); return
+
+    if data.startswith("epfamily:"):
+        _, family, uid = data.split(":", 2)
+        if uid not in LINKS:
+            await _edit(chat_id, message_id, "پیدا نشد.", _main_menu_kb()); return
+        if family not in ("vless", "vmess", "trojan"):
+            family = "vless"
+        await _edit(
+            chat_id, message_id,
+            f"🌐 <b>{PROTOCOL_FAMILY_LABELS[family]}</b>\n\nترنسپورت رو انتخاب کن:",
+            _edit_protocol_transport_kb(uid, family),
+        ); return
+
+    if data.startswith("eptrans:"):
+        _, family, transport, uid = data.split(":", 3)
+        if uid not in LINKS:
+            await _edit(chat_id, message_id, "پیدا نشد.", _main_menu_kb()); return
+        if family not in ("vless", "vmess", "trojan"):
+            family = "vless"
+        if transport not in ("ws", "packet-up", "stream-up"):
+            transport = "ws"
+        proto = f"{family}-ws" if transport == "ws" else f"{family}-xhttp-{transport}"
+        if proto not in PROTOCOLS:
+            await _answer_cb(cb_id, "پروتکل نامعتبر")
+            return
+        u = await update_link_field(uid, "protocol", proto)
+        if not u:
+            await _edit(chat_id, message_id, "پیدا نشد.", _main_menu_kb()); return
+        await _edit(chat_id, message_id, f"✅ پروتکل تغییر کرد.\n\n{_format_detail(uid, u)}",
+                    _link_detail_kb(uid, u["active"])); return
 
     # ── ویرایش: Sub Token ───────────────────────────────────────────────
     if data.startswith("e:token:"):
@@ -1723,8 +1827,26 @@ async def _handle_callback(cb: dict):
             await _edit(chat_id, message_id, "این مرحله منقضی شده.", _main_menu_kb()); return
         step = pending["step"]; wd = pending["data"]
 
-        if data.startswith("w:proto:") and step == "protocol":
-            proto = data.split(":", 2)[2]
+        if data == "w:back:family" and step == "transport":
+            wd.pop("protocol_family", None)
+            pending["step"] = "protocol"
+            await _edit(chat_id, message_id, _wizard_prompt("protocol", wd), _wizard_protocol_kb()); return
+
+        if data.startswith("w:family:") and step == "protocol":
+            family = data.split(":", 2)[2]
+            if family not in ("vless", "vmess", "trojan"):
+                family = "vless"
+            wd["protocol_family"] = family
+            pending["step"] = "transport"
+            await _edit(chat_id, message_id, _wizard_prompt("transport", wd), _wizard_transport_kb(family)); return
+
+        if data.startswith("w:transport:") and step == "transport":
+            _, _, family, transport = data.split(":", 3)
+            if family not in ("vless", "vmess", "trojan"):
+                family = "vless"
+            if transport not in ("ws", "packet-up", "stream-up"):
+                transport = "ws"
+            proto = f"{family}-ws" if transport == "ws" else f"{family}-xhttp-{transport}"
             wd["protocol"] = proto if proto in PROTOCOLS else DEFAULT_PROTOCOL
             pending["step"] = "fingerprint"
             await _edit(chat_id, message_id, _wizard_prompt("fingerprint", wd), _wizard_fp_kb()); return
@@ -1800,7 +1922,7 @@ async def _handle_inline(q: dict):
             continue
         if not is_link_allowed(l): continue
         try:
-            vless = vless_link_for_link(l, uid, get_host())
+            share_link = vless_link_for_link(l, uid, get_host())
         except Exception: continue
         results.append({
             "type": "article",
@@ -1808,7 +1930,7 @@ async def _handle_inline(q: dict):
             "title": label,
             "description": f"{fmt_bytes(l.get('used_bytes',0))} / {('∞' if not l.get('limit_bytes') else fmt_bytes(l['limit_bytes']))}",
             "input_message_content": {
-                "message_text": f"<b>{label}</b>\n<code>{vless}</code>",
+                "message_text": f"<b>{label}</b>\n<code>{share_link}</code>",
                 "parse_mode": "HTML",
             },
             "reply_markup": {"inline_keyboard": [[
