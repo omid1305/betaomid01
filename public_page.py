@@ -1176,18 +1176,23 @@ function fmtBytes(b){
 
 function protoClass(p){
   if(!p) return "ws";
-  if(p.startsWith("xhttp")) return "xhttp";
+  if(p.includes("xhttp")) return "xhttp";
   return "ws";
 }
 
 function protoName(p){
-  if(!p||p==="vless-ws") return "VLESS · WS";
-  if(p==="vmess-ws") return "VMess · WebSocket";
-  if(p==="trojan-ws") return "Trojan · WebSocket";
-  if(p==="xhttp-packet-up") return "XHTTP · packet-up";
-  if(p==="xhttp-stream-up") return "XHTTP · stream-up";
-  if(p==="xhttp-stream-one") return "XHTTP ULTRA";
-  return p;
+  const m={
+    'vless-ws':'VLESS · WebSocket',
+    'vless-xhttp-packet-up':'VLESS · XHTTP · packet-up',
+    'vless-xhttp-stream-up':'VLESS · XHTTP · stream-up',
+    'vmess-ws':'VMess · WebSocket',
+    'vmess-xhttp-packet-up':'VMess · XHTTP · packet-up',
+    'vmess-xhttp-stream-up':'VMess · XHTTP · stream-up',
+    'trojan-ws':'Trojan · WebSocket',
+    'trojan-xhttp-packet-up':'Trojan · XHTTP · packet-up',
+    'trojan-xhttp-stream-up':'Trojan · XHTTP · stream-up'
+  };
+  return m[p] || (p || m['vless-ws']);
 }
 
 function renderConfigCard(l, idx){
@@ -1792,13 +1797,18 @@ function switchTab(name){
 }
 
 function protoName(p){
-  if(!p||p==="vless-ws") return "VLESS · WS";
-  if(p==="vmess-ws") return "VMess · WebSocket";
-  if(p==="trojan-ws") return "Trojan · WebSocket";
-  if(p==="xhttp-packet-up") return "XHTTP · packet-up";
-  if(p==="xhttp-stream-up") return "XHTTP · stream-up";
-  if(p==="xhttp-stream-one") return "XHTTP ULTRA";
-  return p;
+  const m={
+    'vless-ws':'VLESS · WebSocket',
+    'vless-xhttp-packet-up':'VLESS · XHTTP · packet-up',
+    'vless-xhttp-stream-up':'VLESS · XHTTP · stream-up',
+    'vmess-ws':'VMess · WebSocket',
+    'vmess-xhttp-packet-up':'VMess · XHTTP · packet-up',
+    'vmess-xhttp-stream-up':'VMess · XHTTP · stream-up',
+    'trojan-ws':'Trojan · WebSocket',
+    'trojan-xhttp-packet-up':'Trojan · XHTTP · packet-up',
+    'trojan-xhttp-stream-up':'Trojan · XHTTP · stream-up'
+  };
+  return m[p] || (p || m['vless-ws']);
 }
 
 function launchClient(id){
@@ -2480,17 +2490,22 @@ function daysLeft(iso){
 }
 
 function protoName(p){
-  if(!p||p==="vless-ws") return "VLESS · WS";
-  if(p==="vmess-ws") return "VMess · WebSocket";
-  if(p==="trojan-ws") return "Trojan · WebSocket";
-  if(p==="xhttp-packet-up") return "XHTTP · packet-up";
-  if(p==="xhttp-stream-up") return "XHTTP · stream-up";
-  if(p==="xhttp-stream-one") return "XHTTP ULTRA";
-  return p;
+  const m={
+    'vless-ws':'VLESS · WebSocket',
+    'vless-xhttp-packet-up':'VLESS · XHTTP · packet-up',
+    'vless-xhttp-stream-up':'VLESS · XHTTP · stream-up',
+    'vmess-ws':'VMess · WebSocket',
+    'vmess-xhttp-packet-up':'VMess · XHTTP · packet-up',
+    'vmess-xhttp-stream-up':'VMess · XHTTP · stream-up',
+    'trojan-ws':'Trojan · WebSocket',
+    'trojan-xhttp-packet-up':'Trojan · XHTTP · packet-up',
+    'trojan-xhttp-stream-up':'Trojan · XHTTP · stream-up'
+  };
+  return m[p] || (p || m['vless-ws']);
 }
 function protoClass(p){
   if(!p) return "ws";
-  if(p.startsWith("xhttp")) return "xhttp";
+  if(p.includes("xhttp")) return "xhttp";
   return "ws";
 }
 

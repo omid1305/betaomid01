@@ -156,6 +156,11 @@ async def load_state():
                 raw = await f.read()
             data = json.loads(raw)
             LINKS.update(data.get("links", {}))
+            # Migrate protocol values from older panel builds.
+            for _uid, _link in LINKS.items():
+                _link["protocol"] = normalize_protocol(_link.get("protocol"))
+                if _link.get("protocol", "").startswith("trojan-") and not _link.get("password"):
+                    _link["password"] = generate_trojan_password()
             SUBS.update(data.get("subs", {}))
             if "username" in data and str(data["username"]).strip():
                 AUTH["username"] = str(data["username"]).strip()
@@ -216,8 +221,42 @@ TELEGRAM = {
 }
 
 # پروتکل‌های پشتیبانی‌شده برای هر کانفیگ
-PROTOCOLS = ("vless-ws", "vmess-ws", "trojan-ws", "xhttp-packet-up", "xhttp-stream-up", "xhttp-stream-one")
+PROTOCOLS = (
+    "vless-ws", "vless-xhttp-packet-up", "vless-xhttp-stream-up",
+    "vmess-ws", "vmess-xhttp-packet-up", "vmess-xhttp-stream-up",
+    "trojan-ws", "trojan-xhttp-packet-up", "trojan-xhttp-stream-up",
+)
 DEFAULT_PROTOCOL = "vless-ws"
+
+# Compatibility aliases for old saved links. Older builds used the transport
+# name by itself for VLESS/XHTTP. We normalize those values to the explicit
+# protocol+transport form during state load.
+_PROTOCOL_ALIASES = {
+    "xhttp-packet-up": "vless-xhttp-packet-up",
+    "xhttp-stream-up": "vless-xhttp-stream-up",
+    "xhttp-stream-one": "vless-xhttp-stream-up",
+}
+
+def normalize_protocol(value: str | None) -> str:
+    p = str(value or DEFAULT_PROTOCOL).strip().lower()
+    p = _PROTOCOL_ALIASES.get(p, p)
+    return p if p in PROTOCOLS else DEFAULT_PROTOCOL
+
+def split_protocol(protocol: str | None) -> tuple[str, str]:
+    p = normalize_protocol(protocol)
+    for family in ("vless", "vmess", "trojan"):
+        if p == f"{family}-ws":
+            return family, "ws"
+        prefix = f"{family}-xhttp-"
+        if p.startswith(prefix):
+            return family, p[len(prefix):]
+    return "vless", "ws"
+
+def protocol_label(protocol: str | None) -> str:
+    family, transport = split_protocol(protocol)
+    fam = {"vless":"VLESS", "vmess":"VMess", "trojan":"Trojan"}.get(family, family.upper())
+    tr = "WebSocket" if transport == "ws" else f"XHTTP · {transport}"
+    return f"{fam} · {tr}"
 
 # Fingerprint (uTLS) های قابل انتخاب برای هر کانفیگ
 FINGERPRINTS = ("chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized")
@@ -226,10 +265,14 @@ DEFAULT_FINGERPRINT = "chrome"
 # پیش‌فرض ALPN بر اساس نوع ترابرد (اگر کاربر مقدار دستی نده)
 DEFAULT_ALPN_BY_PROTOCOL = {
     "vless-ws": "http/1.1",
+    "vless-xhttp-packet-up": "h2,http/1.1",
+    "vless-xhttp-stream-up": "h2,http/1.1",
     "vmess-ws": "http/1.1",
-    "xhttp-packet-up": "h2,http/1.1",
-    "xhttp-stream-up": "h2,http/1.1",
-    "xhttp-stream-one": "h2,http/1.1",
+    "vmess-xhttp-packet-up": "h2,http/1.1",
+    "vmess-xhttp-stream-up": "h2,http/1.1",
+    "trojan-ws": "http/1.1",
+    "trojan-xhttp-packet-up": "h2,http/1.1",
+    "trojan-xhttp-stream-up": "h2,http/1.1",
 }
 DEFAULT_PORT = 443
 MIN_PORT, MAX_PORT = 1, 65535
@@ -334,8 +377,13 @@ def generate_vless_link(
     alpn: str | None = None,
     port: int | None = None,
 ) -> str:
-    """می‌سازد VLESS share-link متناسب با پروتکل انتخاب‌شده (WS کلاسیک یا یکی از مدهای XHTTP).
-    fingerprint / alpn / port در صورت ندادن، از پیش‌فرض‌های خود پروتکل استفاده می‌شوند."""
+    """Generate a VLESS share-link for WS or XHTTP packet/stream-up."""
+    protocol = normalize_protocol(protocol)
+    family, transport = split_protocol(protocol)
+    if family != "vless":
+        protocol = "vless-ws"
+        family, transport = "vless", "ws"
+
     fp = (fingerprint or DEFAULT_FINGERPRINT).strip() or DEFAULT_FINGERPRINT
     if fp not in FINGERPRINTS:
         fp = DEFAULT_FINGERPRINT
@@ -344,7 +392,7 @@ def generate_vless_link(
     if not (MIN_PORT <= port_val <= MAX_PORT):
         port_val = DEFAULT_PORT
 
-    if protocol == "vless-ws":
+    if transport == "ws":
         path = f"/ws/{uuid}"
         params = {
             "encryption": "none",
@@ -357,14 +405,12 @@ def generate_vless_link(
             "alpn": alpn_val,
         }
     else:
-        # xhttp-packet-up / xhttp-stream-up / xhttp-stream-one
-        mode = protocol.replace("xhttp-", "")  # packet-up | stream-up | stream-one
-        path = f"/xhttp-siz10/{mode}/{uuid}"
+        path = f"/xhttp-siz10/{transport}/{uuid}"
         params = {
             "encryption": "none",
             "security": "tls",
             "type": "xhttp",
-            "mode": mode,
+            "mode": transport,
             "host": host,
             "path": path,
             "sni": host,
@@ -373,6 +419,7 @@ def generate_vless_link(
         }
     query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
     return f"vless://{uuid}@{host}:{port_val}?{query}#{quote(remark)}"
+
 def build_vless_remark(link: dict) -> str:
     inbound = "OMID"
     email = (link.get("label") or "Config").strip()
@@ -426,29 +473,35 @@ def generate_trojan_link(
     port: int | None = None,
     fingerprint: str | None = None,
     alpn: str | None = None,
+    protocol: str = "trojan-ws",
 ) -> str:
-    """Generate a Trojan over WebSocket + TLS share link.
+    """Generate Trojan share-link for WebSocket or XHTTP."""
+    protocol = normalize_protocol(protocol)
+    family, transport = split_protocol(protocol)
+    if family != "trojan":
+        protocol = "trojan-ws"
+        transport = "ws"
 
-    The UUID is used only to make the WS path unique inside this panel;
-    Trojan itself authenticates with the password.
-    """
     port_val = port or DEFAULT_PORT
     if not (MIN_PORT <= port_val <= MAX_PORT):
         port_val = DEFAULT_PORT
-
-    path = f"/trojan/{uuid}" if uuid else "/trojan"
     fp = (fingerprint or DEFAULT_FINGERPRINT).strip() or DEFAULT_FINGERPRINT
-    alpn_val = (alpn or "").strip() or "http/1.1"
+    if fp not in FINGERPRINTS:
+        fp = DEFAULT_FINGERPRINT
+    alpn_val = (alpn or "").strip() or DEFAULT_ALPN_BY_PROTOCOL.get(protocol, "http/1.1")
+    path = f"/trojan/{uuid}" if transport == "ws" and uuid else ("/trojan" if transport == "ws" else f"/xhttp-siz10/{transport}/{uuid}")
 
     params = {
         "security": "tls",
-        "type": "ws",
+        "type": "ws" if transport == "ws" else "xhttp",
         "host": host,
         "path": path,
         "sni": host,
         "fp": fp,
         "alpn": alpn_val,
     }
+    if transport != "ws":
+        params["mode"] = transport
     query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
     return f"trojan://{quote(password)}@{host}:{port_val}?{query}#{quote(remark)}"
 
@@ -460,24 +513,33 @@ def generate_vmess_link(
     port: int | None = None,
     fingerprint: str | None = None,
     alpn: str | None = None,
+    protocol: str = "vmess-ws",
 ) -> str:
-    """Generate a VMess WS + TLS share-link with automatic TLS SNI.
+    """Generate a VMess share-link for WS or XHTTP packet/stream-up."""
+    protocol = normalize_protocol(protocol)
+    family, transport = split_protocol(protocol)
+    if family != "vmess":
+        protocol = "vmess-ws"
+        transport = "ws"
 
-    The SNI is always set to the same hostname used by the panel for the
-    generated link. Fingerprint/ALPN follow the panel defaults unless a
-    per-link value is stored.
-    """
     port_val = port or DEFAULT_PORT
     if not (MIN_PORT <= port_val <= MAX_PORT):
         port_val = DEFAULT_PORT
-
     fp = (fingerprint or DEFAULT_FINGERPRINT).strip() or DEFAULT_FINGERPRINT
     if fp not in FINGERPRINTS:
         fp = DEFAULT_FINGERPRINT
+    alpn_val = (alpn or "").strip() or DEFAULT_ALPN_BY_PROTOCOL.get(protocol, "http/1.1")
+    is_xhttp = transport != "ws"
 
-    alpn_val = (alpn or "").strip() or DEFAULT_ALPN_BY_PROTOCOL.get(
-        "vmess-ws", "http/1.1"
-    )
+    # VMess XHTTP clients expect the mode value itself to be exactly
+    # "packet-up" or "stream-up".  Be defensive here so an accidental
+    # transport value like "xhttp-packet-up" can never produce a blank or
+    # invalid mode in the exported VMess JSON.
+    vmess_mode = transport
+    if vmess_mode.startswith("xhttp-"):
+        vmess_mode = vmess_mode[len("xhttp-"):]
+    if vmess_mode not in ("packet-up", "stream-up"):
+        vmess_mode = ""
 
     vmess_config = {
         "v": "2",
@@ -487,12 +549,15 @@ def generate_vmess_link(
         "id": uuid,
         "aid": "0",
         "scy": "auto",
-        "net": "ws",
-        "type": "none",
+        # VMess XHTTP import compatibility:
+        # the 3x-ui/XHTTP VMess importer expects the selected XHTTP mode
+        # in the legacy `type` field (packet-up / stream-up). For WebSocket
+        # keep the normal VMess `type=none`.
+        "net": "xhttp" if is_xhttp else "ws",
+        "type": vmess_mode if is_xhttp and vmess_mode else "none",
         "host": host,
-        "path": f"/vmess/{uuid}",
+        "path": f"/xhttp-siz10/{vmess_mode}/{uuid}" if is_xhttp and vmess_mode else f"/vmess/{uuid}",
         "tls": "tls",
-        # TLS parameters: automatically mirror the panel hostname.
         "sni": host,
         "alpn": alpn_val,
         "fp": fp,
@@ -500,6 +565,8 @@ def generate_vmess_link(
         "vcn": "",
         "pcs": "",
     }
+    # Do not add a separate `mode` key for VMess XHTTP here.
+    # The target importer reads packet-up / stream-up from `type`.
 
     json_bytes = json.dumps(
         vmess_config,
@@ -507,45 +574,35 @@ def generate_vmess_link(
         indent=2,
         separators=(",", ": "),
     ).encode("utf-8")
-    b64_encoded = base64.b64encode(json_bytes).decode("utf-8")
-    return f"vmess://{b64_encoded}"
+    return f"vmess://{base64.b64encode(json_bytes).decode('utf-8')}"
 
 def vless_link_for_link(link: dict, uid: str, host: str) -> str:
-    """Return the correct share link for the stored protocol.
-
-    Historical endpoints still call this function, so its name is kept for
-    compatibility even though it now handles VLESS, VMess and Trojan.
-    """
-    proto = link.get("protocol", DEFAULT_PROTOCOL)
+    """Return the correct share link for all 9 protocol/transport combinations."""
+    proto = normalize_protocol(link.get("protocol", DEFAULT_PROTOCOL))
+    family, _transport = split_protocol(proto)
     remark = build_vless_remark(link)
 
-    if proto == "vmess-ws":
+    if family == "vmess":
         return generate_vmess_link(
-            uid,
-            host,
-            remark=remark,
+            uid, host, remark=remark,
             port=link.get("port"),
             fingerprint=link.get("fingerprint"),
             alpn=link.get("alpn"),
+            protocol=proto,
         )
 
-    if proto == "trojan-ws":
+    if family == "trojan":
         password = (link.get("password") or uid).strip()
         return generate_trojan_link(
-            password=password,
-            host=host,
-            remark=remark,
-            uuid=uid,
+            password=password, host=host, remark=remark, uuid=uid,
             port=link.get("port"),
             fingerprint=link.get("fingerprint"),
             alpn=link.get("alpn"),
+            protocol=proto,
         )
 
     return generate_vless_link(
-        uid,
-        host,
-        remark=remark,
-        protocol=proto,
+        uid, host, remark=remark, protocol=proto,
         fingerprint=link.get("fingerprint"),
         alpn=link.get("alpn"),
         port=link.get("port"),
@@ -1129,15 +1186,14 @@ async def make_link(
     speed_limit_bytes: int = 0,
     sub_token: str = "",
 ) -> tuple[str, dict]:
-    if protocol not in PROTOCOLS:
-        protocol = DEFAULT_PROTOCOL
+    protocol = normalize_protocol(protocol)
     fingerprint = (fingerprint or DEFAULT_FINGERPRINT).strip().lower()
     if fingerprint not in FINGERPRINTS:
         fingerprint = DEFAULT_FINGERPRINT
     if not (MIN_PORT <= port <= MAX_PORT):
         port = DEFAULT_PORT
     uid = generate_uuid()
-    trojan_password = generate_trojan_password() if protocol == "trojan-ws" else ""
+    trojan_password = generate_trojan_password() if split_protocol(protocol)[0] == "trojan" else ""
     async with LINKS_LOCK:
         LINKS[uid] = {
             "label": (label or "لینک جدید").strip()[:60] or "لینک جدید",
@@ -1368,6 +1424,12 @@ async def update_link(uid: str, request: Request, _=Depends(require_auth)):
         if "active" in body:
             link["active"] = bool(body["active"])
             log_activity("link", f"کانفیگ «{label}» {'فعال' if link['active'] else 'غیرفعال'} شد", "ok" if link["active"] else "warn")
+        if "protocol" in body:
+            new_proto = normalize_protocol(body.get("protocol"))
+            link["protocol"] = new_proto
+            if split_protocol(new_proto)[0] == "trojan" and not link.get("password"):
+                link["password"] = generate_trojan_password()
+
         if "label" in body:
             link["label"] = str(body["label"])[:60]
         if "note" in body:
@@ -1405,7 +1467,7 @@ async def update_link(uid: str, request: Request, _=Depends(require_auth)):
                 raise HTTPException(status_code=400, detail=result)
             link["sub_token"] = result
             log_activity("link", f"Sub Token کانفیگ «{link['label']}» تنظیم شد: {result or 'پاک شد'}", "info")
-        if any(k in body for k in ("label", "note", "limit_value", "expires_days", "fingerprint", "alpn", "port", "ip_limit", "speed_limit_value", "sub_token")):
+        if any(k in body for k in ("protocol", "label", "note", "limit_value", "expires_days", "fingerprint", "alpn", "port", "ip_limit", "speed_limit_value", "sub_token")):
             log_activity("link", f"کانفیگ «{link['label']}» ویرایش شد", "info")
         new_sub = body.get("sub_id", "UNCHANGED")
         if new_sub != "UNCHANGED":
@@ -1685,7 +1747,7 @@ def _serialize_link_for_admin(link: dict, uid: str, host: str) -> dict:
         "expired": is_link_expired(link),
         "allowed": is_link_allowed(link),
         "protocol": proto,
-        "trojan_password": link.get("password", "") if proto == "trojan-ws" else "",
+        "trojan_password": link.get("password", "") if split_protocol(proto)[0] == "trojan" else "",
         "used_bytes": link.get("used_bytes", 0),
         "used_fmt": fmt_bytes(link.get("used_bytes", 0)),
         "limit_bytes": link.get("limit_bytes", 0),
