@@ -31,6 +31,10 @@ import io
 import csv
 import json
 import time
+
+import qrcode
+from PIL import Image, ImageDraw
+
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
@@ -260,6 +264,81 @@ async def _send_photo(chat_id: int, photo_url: str, caption: str = "", kb: dict 
     if caption: payload["caption"] = caption
     if kb: payload["reply_markup"] = kb
     return await _call("sendPhoto", **payload)
+
+
+async def _send_photo_bytes(chat_id: int, filename: str, content: bytes, caption: str = "", kb: dict | None = None):
+    """Send an in-memory PNG to Telegram (used for the panel-style QR)."""
+    if _client is None:
+        return None
+    try:
+        data = {"chat_id": str(chat_id), "parse_mode": "HTML"}
+        if caption:
+            data["caption"] = caption
+        if kb:
+            data["reply_markup"] = json.dumps(kb, ensure_ascii=False, separators=(",", ":"))
+        files = {"photo": (filename, content, "image/png")}
+        r = await _client.post(f"{_api_base()}/sendPhoto", data=data, files=files, timeout=60)
+        result = r.json()
+        if not result.get("ok"):
+            logger.warning(f"sendPhoto(bytes) failed: {result}")
+        return result
+    except Exception as e:
+        logger.warning(f"sendPhoto(bytes) error: {e}")
+        return None
+
+
+def _build_styled_qr_png(data: str, size: int = 560) -> bytes:
+    """Build a QR visually close to the OMID panel QRCodeStyling theme."""
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=1,
+        border=0,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    n = len(matrix)
+
+    scale = 2
+    work = max(size * scale, 1120)
+    padding = 24 * scale
+    usable = work - 2 * padding
+    cell = usable / n
+
+    img = Image.new("RGB", (work, work), "white")
+    draw = ImageDraw.Draw(img)
+
+    # Same blue -> purple diagonal gradient used by the web panel.
+    c0 = (74, 144, 255)
+    c1 = (176, 38, 255)
+
+    def color_at(x: float, y: float):
+        t = max(0.0, min(1.0, (x + y) / (work * 1.35)))
+        return tuple(int(c0[i] * (1.0 - t) + c1[i] * t) for i in range(3))
+
+    # Extra-rounded modules, with a tiny white gap to mimic QRCodeStyling.
+    gap = max(1.4 * scale, cell * 0.10)
+    radius = max(1.0 * scale, cell * 0.28)
+
+    for row, line in enumerate(matrix):
+        y0 = padding + row * cell + gap
+        y1 = padding + (row + 1) * cell - gap
+        for col, dark in enumerate(line):
+            if not dark:
+                continue
+            x0 = padding + col * cell + gap
+            x1 = padding + (col + 1) * cell - gap
+            cx = (x0 + x1) / 2
+            cy = (y0 + y1) / 2
+            draw.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=color_at(cx, cy))
+
+    # Add a clean white quiet-zone/frame like the panel.
+    img = img.resize((size, size), Image.Resampling.LANCZOS)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
 
 async def _send_document(chat_id: int, filename: str, content: bytes, caption: str = ""):
     if _client is None: return None
@@ -1234,6 +1313,23 @@ async def _handle_callback(cb: dict):
         await _edit(chat_id, message_id, "\n".join(lines), {"inline_keyboard": [
             [{"text":"🔄","callback_data":"top"}],[{"text":"⬅ منو","callback_data":"menu"}]]}); return
 
+    # ── جزئیات کانفیگ ──────────────────────────────────────────────────
+    # لیست کانفیگ‌ها با callback داده‌ی view:<uuid> ساخته می‌شود؛ این handler
+    # نمایش جزئیات همان کانفیگ را به‌صورت مستقیم انجام می‌دهد.
+    if data.startswith("view:"):
+        uid = data.split(":", 1)[1]
+        l = LINKS.get(uid)
+        if not l:
+            await _edit(chat_id, message_id, "پیدا نشد.", _main_menu_kb())
+            return
+        await _edit(
+            chat_id,
+            message_id,
+            _format_detail(uid, l),
+            _link_detail_kb(uid, bool(l.get("active", True))),
+        )
+        return
+
     # ── آمار یک کانفیگ ──────────────────────────────────────────────────
     if data.startswith("cfgstats:"):
         uid = data.split(":", 1)[1]; l = LINKS.get(uid)
@@ -1260,10 +1356,15 @@ async def _handle_callback(cb: dict):
         uid = data.split(":", 1)[1]; l = LINKS.get(uid)
         if not l:
             await _answer_cb(cb_id, "پیدا نشد"); return
-        sub_url = _link_sub_url(l, uid)
-        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={sub_url}"
-        await _send_photo(chat_id, qr_url,
-            f"📷 QR — <b>{l.get('label','?')}</b>\n\n<code>{sub_url}</code>"); return
+        share_link = vless_link_for_link(l, uid, get_host())
+        qr_png = _build_styled_qr_png(share_link, 560)
+        await _send_photo_bytes(
+            chat_id,
+            f"qr-{uid[:8]}.png",
+            qr_png,
+            f"📷 QR — <b>{l.get('label','?')}</b>\n\n<code>{share_link}</code>",
+        )
+        return
 
     # ── لینک ────────────────────────────────────────────────────────────
     if data.startswith("link:"):
@@ -1657,8 +1758,14 @@ async def _handle_callback(cb: dict):
         if not s:
             await _answer_cb(cb_id, "پیدا نشد"); return
         url = _group_sub_url(s)
-        qr = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={url}"
-        await _send_photo(chat_id, qr, f"📷 ساب «{s.get('name','?')}»\n\n<code>{url}</code>"); return
+        qr_png = _build_styled_qr_png(url, 560)
+        await _send_photo_bytes(
+            chat_id,
+            f"qr-sub-{sid[:8]}.png",
+            qr_png,
+            f"📷 ساب «{s.get('name','?')}»\n\n<code>{url}</code>",
+        )
+        return
 
     if data.startswith("subaddlink:"):
         _, sid, page_s = data.split(":", 2)
