@@ -7,6 +7,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 import asyncio
+import hmac
 import secrets
 import socket
 import time
@@ -74,6 +75,7 @@ QUOTA_START_BATCH = 64 * 1024
 QUOTA_CHECK_INTERVAL = 0.2  # سقف زمانی؛ حتی اگر batch پر نشده، بعد این مدت چک کن
 
 PACKET_UP_HIGH_WATER = 2 * 1024 * 1024  # packet-up همون منطق ساده‌ی قبلی رو داره (تمرکز این راند فقط stream-up بود)
+MAX_BUFFERED_POSTS = 30
 
 xhttp_sessions: dict = {}
 XHTTP_LOCK = asyncio.Lock()
@@ -268,6 +270,7 @@ async def _get_or_create_session(uuid: str, mode: str, session_id: str, ip: str 
         }
         sess = {
             "uuid": uuid, "mode": mode, "family": family,
+            "session_id": session_id,
             "writer": None,
             "reader": None,
             "downlink_task": None,
@@ -365,11 +368,15 @@ async def _connect_target(host: str, port: int):
 
 
 async def _authenticate_and_parse_trojan(sess: dict, buffer: bytes):
-    req = _parse_request_header(buffer)
-    family = sess["family"]
+    try:
+        req = _parse_request_header(buffer)
+    except _NeedMoreData:
+        return None
+
     link = LINKS.get(sess["uuid"])
     password = (link or {}).get("password") or sess["uuid"]
-    if not password or req.password_hash != _sha224_hex(password):
+    expected = _sha224_hex(password) if password else ""
+    if not expected or not hmac.compare_digest(req.password_hash, expected):
         raise ValueError("Trojan authentication failed")
     return req
 
@@ -445,6 +452,8 @@ async def _try_initialize(sess: dict):
 
     if family == "trojan":
         req = await _authenticate_and_parse_trojan(sess, buf)
+        if req is None:
+            return False, b""
         sess["protocol_info"] = req
         if req.cmd == 1:
             reader, writer = await _connect_target(req.target_host, req.target_port)
@@ -658,6 +667,11 @@ async def packet_up_upload(uuid: str, session_id: str, seq: int, request: Reques
     connections[sess["conn_id"]]["bytes"] += len(body)
 
     try:
+        if seq < sess["next_seq"]:
+            return {"ok": True, "duplicate": True, "connected": bool(sess.get("transport_open"))}
+        if seq != sess["next_seq"] and len(sess["seq_buf"]) >= MAX_BUFFERED_POSTS:
+            await _teardown(session_id)
+            raise HTTPException(status_code=409, detail="too many buffered XHTTP posts")
         sess["seq_buf"][seq] = body
         while sess["next_seq"] in sess["seq_buf"]:
             pending = sess["seq_buf"].pop(sess["next_seq"])
@@ -668,7 +682,7 @@ async def packet_up_upload(uuid: str, session_id: str, seq: int, request: Reques
     except Exception as exc:
         error_logs.append({"error": str(exc), "time": datetime.now().isoformat()})
         await _teardown(session_id)
-        raise HTTPException(status_code=502, detail="write failed")
+        raise HTTPException(status_code=502, detail=f"{sess.get('family', 'xhttp')} write failed")
 
     return {"ok": True, "connected": bool(sess.get("transport_open"))}
 
@@ -710,7 +724,7 @@ async def stream_up_upload(uuid: str, session_id: str, request: Request):
         error_logs.append({"error": str(exc), "time": datetime.now().isoformat()})
         await gate.flush()
         await _teardown(session_id)
-        raise HTTPException(status_code=502, detail="stream error")
+        raise HTTPException(status_code=502, detail=f"{sess.get('family', 'xhttp')} stream error")
 
     await gate.flush()
     return {"ok": True}
