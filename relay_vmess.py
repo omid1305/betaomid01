@@ -1,18 +1,20 @@
 # relay_vmess.py
 # ══════════════════════════════════════════════════════════════════════════
-# VMess AEAD Relay — هم‌راستا با relay_vless
-#   • throttle() روی هر دو جهت (اعمال speed_limit_bytes)
-#   • check_and_use() مشترک با VLESS → used_bytes + stats + hourly_traffic
-#   • بدون LINKS_LOCK توی لوپ (بهینه برای throughput)
-#   • بررسی is_link_allowed هر چانک (قطع خودکار در کوتا/غیرفعالی)
-#   • TCP_NODELAY + RELAY_BUF=256KB (هم‌اندازه با VLESS)
-#   • timeout روی فریم اول (15s) و اتصال TCP (10s)
+# VMess AEAD Relay — سازگار کامل با Xray-core 24+
+#   • KDF مطابق دقیق Xray-core (HMAC chain با prefix "VMess AEAD KDF")
+#   • AuthID از روی raw UUID bytes (نه md5)
+#   • salt strings عیناً مطابق Xray
+#   • Response header با AEAD envelope (encrypted_length + encrypted_payload)
+#   • response IV/key تولید و به کلاینت فرستاده می‌شه
+#   • throttle() روی هر دو جهت
+#   • check_and_use() مشترک با VLESS
 # ══════════════════════════════════════════════════════════════════════════
 
 import asyncio
-import struct
 import hashlib
 import hmac
+import secrets
+import struct
 import time
 import logging
 import socket
@@ -27,127 +29,189 @@ from speed_limit import throttle
 
 logger = logging.getLogger("OMIDIRAN_PANEL.VMESS")
 
-RELAY_BUF = 256 * 1024            # 256 KB — هم‌اندازه با VLESS
+RELAY_BUF = 256 * 1024
 TCP_CONNECT_TIMEOUT = 10.0
 FIRST_FRAME_TIMEOUT = 15.0
 
+# ══════════════════════════════════════════════════════════════════════════
+# Xray-core salt strings — عیناً مطابق کد Go (هر حرف مهمه)
+# ══════════════════════════════════════════════════════════════════════════
+KDF_SALT = b"VMess AEAD KDF"
+
+SALT_REQ_LEN_KEY = b"VMess Header AEAD Key_Length"
+SALT_REQ_LEN_IV  = b"VMess Header AEAD IV_Length"
+SALT_REQ_PAY_KEY = b"VMess Header AEAD Key"
+SALT_REQ_PAY_IV  = b"VMess Header AEAD IV"
+
+SALT_RESP_LEN_KEY = b"AEAD Resp Header Len Key"
+SALT_RESP_LEN_IV  = b"AEAD Resp Header Len IV"
+SALT_RESP_PAY_KEY = b"AEAD Resp Header Key"
+SALT_RESP_PAY_IV  = b"AEAD Resp Header IV"
+
 
 # ══════════════════════════════════════════════════════════════════════════
-# KDF استاندارد VMess AEAD
+# KDF — مطابق دقیق Xray-core
 # ══════════════════════════════════════════════════════════════════════════
-def _kdf(key: bytes, path: list[bytes]) -> bytes:
-    h = hmac.new(b"VMess AEAD KDF", key, hashlib.sha256).digest()
-    for p in path:
+def _kdf(key: bytes, *paths: bytes) -> bytes:
+    """Xray-core KDF chain:
+       h0 = HMAC-SHA256(key, "VMess AEAD KDF")
+       h1 = HMAC-SHA256(h0,  paths[0])
+       h2 = HMAC-SHA256(h1,  paths[1])
+       ...
+       return hN (32 bytes)
+    """
+    h = hmac.new(key, KDF_SALT, hashlib.sha256).digest()
+    for p in paths:
         h = hmac.new(h, p, hashlib.sha256).digest()
     return h
 
 
-def _decrypt_vmess_aead_header(data: bytes, user_uuid: str):
-    """رمزگشایی هدر اولیه VMess AEAD و استخراج آدرس/پورت مقصد.
-    Returns: (header_info | None, error_message | None)"""
+# ══════════════════════════════════════════════════════════════════════════
+# Decode VMess AEAD request header
+# ══════════════════════════════════════════════════════════════════════════
+def _decode_request_header(data: bytes, user_uuid: str):
+    """Parse VMess AEAD request header.
+    Returns: (info dict | None, error message | None)
+    """
     try:
         u_bytes = UUID(user_uuid).bytes
     except ValueError:
         return None, "فرمت UUID نامعتبر است"
 
-    cmd_key = hashlib.md5(u_bytes + b"c48619fe-8f02-3309-bc9d-5f32e4617ffd").digest()
-
-    if len(data) < 34:  # 16 (AuthID) + 2 (Encrypted Len) + 16 (Tag)
+    if len(data) < 34:  # 16 (authID) + 2 (enc len) + 16 (tag)
         return None, "داده‌ی هدر کافی نیست"
 
     auth_id = data[:16]
 
-    # ── اعتبارسنجی Auth ID با پنجره‌ی زمانی ±120s ──
+    # ── AuthID validation: authID = KDF(uuid_bytes, ts_be)[:16] ──
     now = int(time.time())
-    match_time = None
-    for t in range(now - 120, now + 121):
+    valid = False
+    for delta in range(-120, 121):
+        t = now + delta
         t_bytes = struct.pack(">Q", t)
-        expected_auth_id = hmac.new(cmd_key, t_bytes, hashlib.sha256).digest()[:16]
-        if expected_auth_id == auth_id:
-            match_time = t
+        expected = _kdf(u_bytes, t_bytes)[:16]
+        if hmac.compare_digest(expected, auth_id):
+            valid = True
             break
 
-    if match_time is None:
-        return None, "اعتبارسنجی Auth ID ناموفق بود (ناهمخوانی زمان یا UUID)"
+    if not valid:
+        return None, "اعتبارسنجی Auth ID ناموفق بود"
 
-    # ── رمزگشایی طول هدر (18 بایت) ──
-    len_key = _kdf(cmd_key, [b"VMessAEADHeaderLengthKey", auth_id])[:16]
-    len_iv = _kdf(cmd_key, [b"VMessAEADHeaderLengthIV", auth_id])[:12]
+    # ── Length AEAD ──
+    len_key = _kdf(u_bytes, auth_id, SALT_REQ_LEN_KEY)[:16]
+    len_iv  = _kdf(u_bytes, auth_id, SALT_REQ_LEN_IV)[:12]
 
     try:
-        # cryptography: ciphertext || tag را یکجا می‌گیره
-        aesgcm_len = AESGCM(len_key)
-        dec_len_bytes = aesgcm_len.decrypt(len_iv, data[16:18] + data[18:34], None)
-        header_len = struct.unpack(">H", dec_len_bytes)[0]
+        dec_len = AESGCM(len_key).decrypt(len_iv, data[16:34], None)
+        header_len = struct.unpack(">H", dec_len)[0]
     except Exception as e:
         return None, f"خطا در رمزگشایی طول هدر: {e}"
 
-    offset = 34
-    if len(data) < offset + header_len + 16:
+    if len(data) < 34 + header_len + 16:
         return None, "بدنه‌ی هدر ناقص است"
 
-    # ── رمزگشایی بدنه‌ی هدر ──
-    payload_enc = data[offset : offset + header_len]
-    payload_tag = data[offset + header_len : offset + header_len + 16]
-    header_end_offset = offset + header_len + 16
+    # ── Payload AEAD ──
+    payload_ct = data[34 : 34 + header_len + 16]
+    header_end = 34 + header_len + 16
 
-    payload_key = _kdf(cmd_key, [b"VMessAEADHeaderPayloadKey", auth_id])[:16]
-    payload_iv = _kdf(cmd_key, [b"VMessAEADHeaderPayloadIV", auth_id])[:12]
+    pay_key = _kdf(u_bytes, auth_id, SALT_REQ_PAY_KEY)[:16]
+    pay_iv  = _kdf(u_bytes, auth_id, SALT_REQ_PAY_IV)[:12]
 
     try:
-        # cryptography: ciphertext || tag را یکجا می‌گیره
-        aesgcm_payload = AESGCM(payload_key)
-        payload = aesgcm_payload.decrypt(payload_iv, payload_enc + payload_tag, None)
+        payload = AESGCM(pay_key).decrypt(pay_iv, payload_ct, None)
     except Exception as e:
         return None, f"خطا در رمزگشایی بدنه‌ی هدر: {e}"
 
     if len(payload) < 41:
-        return None, "ساختار هدر پاسخ معتبر نیست"
+        return None, "ساختار هدر معتبر نیست"
 
     ver = payload[0]
     req_iv = payload[1:17]
     req_key = payload[17:33]
-    res_header_check = payload[33]
+    res_check = payload[33]
     opt = payload[34]
-    p_sec = payload[35]
-    sec_type = p_sec & 0x0F
+    sec_byte = payload[35]
+    sec_type = sec_byte & 0x0F
+    # payload[36] = padding/reserved
     cmd = payload[37]
     port = struct.unpack(">H", payload[38:40])[0]
     addr_type = payload[40]
 
     idx = 41
     if addr_type == 1:  # IPv4
-        host = socket.inet_ntoa(payload[idx : idx + 4])
+        host = socket.inet_ntoa(payload[idx:idx+4])
         idx += 4
     elif addr_type == 2:  # Domain
-        domain_len = payload[idx]
+        dlen = payload[idx]
         idx += 1
-        host = payload[idx : idx + domain_len].decode("utf-8", errors="ignore")
-        idx += domain_len
+        host = payload[idx:idx+dlen].decode("utf-8", errors="ignore")
+        idx += dlen
     elif addr_type == 3:  # IPv6
-        host = socket.inet_ntop(socket.AF_INET6, payload[idx : idx + 16])
+        host = socket.inet_ntop(socket.AF_INET6, payload[idx:idx+16])
         idx += 16
     else:
         return None, f"نوع آدرس ناشناخته: {addr_type}"
 
-    remaining_data = data[header_end_offset:]
-
     return {
+        "u_bytes": u_bytes,
+        "auth_id": auth_id,
         "ver": ver,
         "req_iv": req_iv,
         "req_key": req_key,
-        "res_header_check": res_header_check,
+        "res_check": res_check,
         "opt": opt,
         "sec_type": sec_type,
         "cmd": cmd,
         "host": host,
         "port": port,
-        "remaining_data": remaining_data,
+        "body_init": data[header_end:],   # داده‌ی بعد از هدر (در همان فریم)
     }, None
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Build AEAD-encrypted response header
+# ══════════════════════════════════════════════════════════════════════════
+def _build_response_header(info: dict) -> bytes:
+    """Response header با AEAD envelope — دقیقاً مطابق Xray-core.
+
+    Plaintext payload:
+        [response_byte] [option_byte] [resp_iv (16B)] [resp_key (16B)]
+        = 34 bytes
+
+    Envelope:
+        [encrypted_length (2B cipher || 16B tag) = 18B]
+      + [encrypted_payload (34B cipher || 16B tag) = 50B]
+      = 68 bytes total
+    """
+    u_bytes = info["u_bytes"]
+    auth_id = info["auth_id"]
+    res_check = info["res_check"]
+
+    # Fresh IV/key برای این session
+    resp_iv = secrets.token_bytes(16)
+    resp_key = secrets.token_bytes(16)
+
+    # Plaintext response header
+    # [res_check] [0x00 = chunk-stream option] [resp_iv] [resp_key]
+    plaintext = bytes([res_check, 0x00]) + resp_iv + resp_key
+
+    # Response salts
+    resp_len_key = _kdf(u_bytes, auth_id, SALT_RESP_LEN_KEY)[:16]
+    resp_len_iv  = _kdf(u_bytes, auth_id, SALT_RESP_LEN_IV)[:12]
+    resp_pay_key = _kdf(u_bytes, auth_id, SALT_RESP_PAY_KEY)[:16]
+    resp_pay_iv  = _kdf(u_bytes, auth_id, SALT_RESP_PAY_IV)[:12]
+
+    length_bytes = struct.pack(">H", len(plaintext))
+    enc_len = AESGCM(resp_len_key).encrypt(resp_len_iv, length_bytes, None)
+    enc_pay = AESGCM(resp_pay_key).encrypt(resp_pay_iv, plaintext, None)
+
+    return enc_len + enc_pay
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Socket tuning
+# ══════════════════════════════════════════════════════════════════════════
 def _tune_socket(writer: asyncio.StreamWriter):
-    """TCP_NODELAY برای کاهش تاخیر (هم‌راستا با VLESS)."""
     sock = writer.transport.get_extra_info("socket")
     if not sock:
         return
@@ -158,7 +222,7 @@ def _tune_socket(writer: asyncio.StreamWriter):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# انتقال داده: WS → TCP (آپلینک کلاینت)
+# Data transfer: WS → TCP (uplink)
 # ══════════════════════════════════════════════════════════════════════════
 async def _vmess_ws_to_tcp(ws: WebSocket, writer: asyncio.StreamWriter, conn_id: str, uid: str):
     try:
@@ -190,7 +254,7 @@ async def _vmess_ws_to_tcp(ws: WebSocket, writer: asyncio.StreamWriter, conn_id:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# انتقال داده: TCP → WS (دانلینک مقصد)
+# Data transfer: TCP → WS (downlink)
 # ══════════════════════════════════════════════════════════════════════════
 async def _vmess_tcp_to_ws(ws: WebSocket, reader: asyncio.StreamReader, conn_id: str, uid: str):
     try:
@@ -210,15 +274,13 @@ async def _vmess_tcp_to_ws(ws: WebSocket, reader: asyncio.StreamReader, conn_id:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# تونل اصلی VMess
+# Main VMess tunnel
 # ══════════════════════════════════════════════════════════════════════════
 async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
-    """مدیریت تونل WebSocket برای پروتکل VMess — هم‌راستا با VLESS."""
     await websocket.accept()
     conn_id = f"vmess-{id(websocket)}"
     ip = main.client_ip(websocket)
 
-    # ── resolve uuid (پشتیبانی از sub_token) ──
     async with main.LINKS_LOCK:
         real_uid, link = main.find_link_by_key(uuid)
 
@@ -228,7 +290,7 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
         return
 
     if not main.is_ip_allowed(link, real_uid, ip):
-        logger.warning(f"🚫 VMess rejected uuid={uuid[:8]}… ip={ip} (ip limit reached)")
+        logger.warning(f"🚫 VMess rejected uuid={uuid[:8]}… ip={ip} (ip limit)")
         await websocket.close(code=4001, reason="محدودیت تعداد آی‌پِی هم‌زمان")
         return
 
@@ -243,7 +305,7 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
 
     target_writer = None
     try:
-        # ── فریم اول: هدر AEAD ──
+        # ── Frame 1: AEAD header ──
         try:
             first_frame = await asyncio.wait_for(
                 websocket.receive_bytes(), timeout=FIRST_FRAME_TIMEOUT
@@ -255,13 +317,13 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
         if not first_frame:
             return
 
-        header_info, err = _decrypt_vmess_aead_header(first_frame, real_uid)
+        header_info, err = _decode_request_header(first_frame, real_uid)
         if err or not header_info:
-            logger.warning(f"VMess header parse error [{ip}]: {err}")
+            logger.warning(f"⚠️  VMess header parse error [{ip}]: {err}")
             await websocket.close(code=4002, reason="خطا در خواندن هدر VMess")
             return
 
-        # ── ثبت مصرف فریم اول (هدر) از طریق مسیر مشترک ──
+        # ── Quota: first frame (header bytes) ──
         if not await check_and_use(real_uid, len(first_frame)):
             await websocket.close(code=1008, reason="quota/disabled/unknown")
             return
@@ -272,7 +334,7 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
         host = header_info["host"]
         port = header_info["port"]
 
-        # ── اتصال به مقصد ──
+        # ── Connect to target ──
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port), timeout=TCP_CONNECT_TIMEOUT
@@ -281,21 +343,21 @@ async def websocket_tunnel_vmess(websocket: WebSocket, uuid: str):
             _tune_socket(writer)
         except Exception as e:
             logger.error(f"VMess connect failed {host}:{port} -> {e}")
-            await websocket.close(code=4003, reason="امکان اتصال به مقصد وجود ندارد")
+            await websocket.close(code=4003, reason="امکان اتصال به مقصد نیست")
             return
 
-        logger.info(f"➡️  VMess [{conn_id}] → {host}:{port}")
+        logger.info(f"➡️  VMess [{conn_id}] → {host}:{port} sec_type={header_info['sec_type']}")
 
-        # ── ارسال داده‌های باقی‌مانده از فریم اول به مقصد ──
-        if header_info["remaining_data"]:
-            writer.write(header_info["remaining_data"])
+        # ── Send any trailing data from first frame to target ──
+        if header_info["body_init"]:
+            writer.write(header_info["body_init"])
             await writer.drain()
 
-        # ── بازگرداندن پاسخ هدر VMess به کلاینت ──
-        res_header = bytes([header_info["res_header_check"], 0x00, 0x00, 0x00])
-        await websocket.send_bytes(res_header)
+        # ── Send AEAD-encrypted response header ──
+        resp_header = _build_response_header(header_info)
+        await websocket.send_bytes(resp_header)
 
-        # ── انتقال دوطرفه تا بسته شدن یکی از جهات ──
+        # ── Bidirectional relay ──
         done, pending = await asyncio.wait(
             {
                 asyncio.create_task(_vmess_ws_to_tcp(websocket, writer, conn_id, real_uid)),
