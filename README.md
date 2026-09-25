@@ -5,15 +5,15 @@
 # 🚀 OMID-IRAN PANEL
 
 **پنل مدیریت کانفیگ VLESS / VMess / Trojan + WebSocket / XHTTP Ultra**
-**Modern VLESS / VMess / Trojan + WebSocket / XHTTP Ultra Management Panel**
 
-[![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue?logo=docker)](https://github.com/omidiran-gaming/omidiran/pkgs/container/omidiran)
+[![Railway](https://img.shields.io/badge/Deploy-Railway-7B61FF?logo=railway&logoColor=white)](https://railway.app/)
+[![Docker](https://img.shields.io/badge/Container-GHCR-2496ED?logo=docker&logoColor=white)](https://github.com/omidiran-gaming/omidiran/pkgs/container/omidiran)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Telegram](https://img.shields.io/badge/Telegram-@omid__gamingORG-26A5E4?logo=telegram&logoColor=white)](https://t.me/omid_gamingORG)
 
-[🇮🇷 فارسی](#-فارسی) · [🇬🇧 English](#-english) · [📦 Docker](https://github.com/omidiran-gaming/omidiran/pkgs/container/omidiran) · [💬 Support](https://t.me/omid_gamingORG)
+**فقط Railway • دو روش نصب: Fork از GitHub یا Deploy مستقیم Container**
 
 </div>
 
@@ -29,337 +29,483 @@
 
 ## 🇮🇷 فارسی
 
-### ✨ درباره‌ی پروژه
+### ✨ معرفی
 
-**OMID-IRAN PANEL** یه پنل مدیریت کانفیگ مدرن، سریع و امن برای پروتکل‌های **VLESS، VMess و Trojan** با ترنسپورت‌های **WebSocket** و **XHTTP Ultra (Siz10a)** هست. طراحی تمیز، رابط دوزبانه، و معماری مبتنی بر FastAPI باعث می‌شه هم برای استفاده‌ی شخصی و هم برای تیم‌های کوچک مناسب باشه.
+**OMID-IRAN PANEL** یک پنل مدیریت مدرن برای ساخت، مدیریت و اشتراک‌گذاری کانفیگ‌های **VLESS، VMess و Trojan** است که از **WebSocket** و **XHTTP Ultra (Siz10a)** پشتیبانی می‌کند.
 
-### 🎯 ویژگی‌های کلیدی
+هسته‌ی پروژه با **FastAPI** ساخته شده و بخش‌های پنل مدیریتی، Public Page و ربات تلگرام برای استفاده‌ی فارسی و انگلیسی طراحی شده‌اند. زبان اصلی رابط کاربری **English** است و ترجمه‌ی فارسی از روی همان متن‌های مرجع انجام می‌شود تا جابه‌جایی زبان باعث به‌هم‌ریختگی یا ترجمه‌ی چندباره نشود.
 
-#### 🔐 هسته‌ی اتصال
-- **VLESS / WebSocket** — ترابرد پایدار و سازگار با CDN
-- **VMess / WebSocket** — Relay سازگار با VMess و TLS
-- **Trojan / WebSocket** — احراز هویت SHA-224 و Relay TCP/UDP
-- **XHTTP Ultra (Siz10a)** — دو مود عملیاتی: `packet-up`, `stream-up`
-- **۹ ترکیب کامل** — سه خانواده‌ی پروتکل × سه ترنسپورت:
-  - VLESS: `ws`, `xhttp-packet-up`, `xhttp-stream-up`
-  - VMess: `ws`, `xhttp-packet-up`, `xhttp-stream-up`
-  - Trojan: `ws`, `xhttp-packet-up`, `xhttp-stream-up`
-- **UUID Auth سخت‌گیرانه** — فقط UUIDهای ثبت‌شده اجازه‌ی اتصال دارند
-- **uTLS Fingerprint** — chrome, firefox, safari, ios, android, edge, 360, qq, random, randomized
-- **ALPN سفارشی** — قابل تنظیم برای هر کانفیگ (h2, http/1.1, ...)
+---
 
-### 🌐 ماتریس پروتکل و ترنسپورت
+## 🔐 پروتکل‌ها و ترنسپورت‌ها
+
+این نسخه از **۹ ترکیب** زیر پشتیبانی می‌کند:
 
 | پروتکل | WebSocket | XHTTP packet-up | XHTTP stream-up |
-|--------|-----------|-----------------|-----------------|
+|---|:---:|:---:|:---:|
 | **VLESS** | ✅ | ✅ | ✅ |
 | **VMess** | ✅ | ✅ | ✅ |
 | **Trojan** | ✅ | ✅ | ✅ |
 
-این نسخه از هر ۹ ترکیب به‌صورت عملیاتی پشتیبانی می‌کند.
+### VLESS
+- WebSocket
+- XHTTP `packet-up`
+- XHTTP `stream-up`
 
-#### 🎛️ مدیریت کانفیگ
-- سهمیه‌ی ترافیک (GB / MB / KB)
-- تاریخ انقضا (روز از الان یا نامحدود)
-- محدودیت IP (کاربر هم‌زمان)
-- محدودیت سرعت (Mbps / KB/s / MB/s)
-- **Sub Token سفارشی** — به‌جای UUID طولانی
-- گروه‌بندی و Sub Groups
-- ریست مصرف · فعال/غیرفعال‌سازی · ویرایش کامل
-- QR Code استایل‌دار + لینک اشتراک متناسب با پروتکل (VLESS / VMess / Trojan)
+### VMess
+- WebSocket
+- XHTTP `packet-up`
+- XHTTP `stream-up`
+- ساخت لینک VMess با فرمت سازگار با کلاینت‌های رایج و ایمپورترهای XHTTP
 
-#### 👥 اشتراک‌گذاری
-- **Sub Group** — گروه‌بندی کانفیگ‌ها با URL یکتا
-- **Public Page** — صفحه‌ی پابلیک زیبا برای هر گروه
-- **رمز عبور اختیاری** برای صفحه‌ی پابلیک
-- لینک ساب همه‌کاره (`/sub-all`)
-- **Auto-import** به: v2rayNG, NekoBox, Sing-Box, Streisand, Shadowrocket, Clash, Hiddify, FoXray, v2rayN
-- تولید لینک صحیح برای هر ۹ ترکیب پروتکل/ترنسپورت
+### Trojan
+- WebSocket
+- XHTTP `packet-up`
+- XHTTP `stream-up`
+- احراز هویت بر پایه‌ی پسورد
+- پشتیبانی Relay برای TCP و UDP
 
-#### 🎨 رابط کاربری
-- **دو تم کامل:**
-  - 🌙 **OMID Glass Premium** (Dark) — purple/pink glassmorphism
-  - ☀️ **Arctic Premium** (Light) — frosted blue/lavender
-- **دوزبانه:** فارسی (RTL) و انگلیسی (LTR) — تغییر لحظه‌ای بدون reload
-- **App-like UI** با bottom nav روی موبایل
-- **Sidebar داینامیک** — بر اساس زبان
-- **Responsive کامل** — موبایل، تبلت، دسکتاپ
-- PWA-friendly
-
-#### 🤖 ربات تلگرام (اختیاری)
-- مدیریت ربات از داخل پنل
-- ساخت/حذف کانفیگ از تلگرام
-- مشاهده‌ی آمار و اتصالات
-- اعتبارسنجی توکن از BotFather
-
-#### 📊 مانیتورینگ
-- نمودار ترافیک ساعتی (Chart.js)
-- اتصالات زنده با IP و مدت زمان
-- لاگ فعالیت‌ها (Activity Log)
-- لاگ خطاها (Error Log)
-- WebSocket Test داخلی
-
-#### 🔒 امنیت
-- Session Cookie با `HttpOnly` + `SameSite=Lax`
-- **SHA-256 + Salt** برای رمز عبور
-- **SECRET_KEY پایدار روی دیسک** — بدون reset بعد از restart
-- CORS قابل تنظیم
-- اعتبارسنجی کامل ورودی‌ها
+### گزینه‌های اتصال
+- **uTLS Fingerprint:** `chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`
+- **ALPN:** `http/1.1`، `h2` و `h2,http/1.1`
+- پورت قابل تنظیم
+- احراز هویت با UUID برای کانفیگ‌های مبتنی بر UUID
 
 ---
 
-### 📦 نصب سریع
+## 🎛️ مدیریت کانفیگ
 
-#### 🐳 روش ۱: Docker (توصیه می‌شه)
+برای هر کانفیگ می‌توان موارد زیر را تنظیم کرد:
 
-```bash
-docker run -d \
-  --name omidiran-panel \
-  -p 8000:8000 \
-  -v omidiran-data:/data \
-  -e ADMIN_USERNAME=omid \
-  -e ADMIN_PASSWORD=changeme \
-  ghcr.io/omidiran-gaming/omidiran:latest
+- نام و توضیحات
+- پروتکل و ترنسپورت
+- سهمیه‌ی ترافیک
+- تاریخ انقضا یا بدون انقضا
+- محدودیت تعداد IP هم‌زمان
+- محدودیت سرعت
+- Fingerprint
+- ALPN
+- پورت
+- Sub Token سفارشی
+- فعال / غیرفعال کردن
+- ریست مصرف
+- حذف و ویرایش کامل
+
+همچنین لینک اشتراک مناسب همان پروتکل به‌صورت خودکار ساخته می‌شود.
+
+---
+
+## 👥 Sub Group و اشتراک‌گذاری
+
+- ساخت **Sub Group**
+- اضافه کردن چند کانفیگ به یک گروه
+- لینک Public Page اختصاصی
+- لینک Subscription اختصاصی
+- امکان تعیین رمز برای گروه
+- Sub Token برای لینک‌های کوتاه‌تر
+- خروجی مناسب برای کلاینت‌های مختلف
+- تولید QR Code استایل‌دار برای لینک‌ها
+
+کلاینت‌های پشتیبانی‌شده در رابط ایمپورت:
+
+`v2rayNG` · `NekoBox` · `Sing-Box` · `Streisand` · `Shadowrocket` · `Clash` · `Hiddify` · `FoXray` · `v2rayN`
+
+---
+
+## 🎨 رابط کاربری
+
+### پنل مدیریت
+- فارسی و انگلیسی
+- زبان پایه‌ی English
+- تغییر زبان بدون reload
+- پشتیبانی کامل از RTL و LTR
+- طراحی Responsive برای موبایل، تبلت و دسکتاپ
+- Sidebar و Navigation سازگار با زبان
+- رابط مدرن و App-like
+
+### تم‌ها
+- 🌙 **OMID Glass Premium** برای حالت تاریک
+- ☀️ **Arctic Premium** برای حالت روشن
+
+### Public Page
+- صفحه‌ی اشتراک مدرن و سبک
+- مشاهده‌ی وضعیت و مصرف کانفیگ‌ها
+- QR Code
+- Import به کلاینت
+- تنظیم زبان
+- تنظیم تم
+
+---
+
+## 🤖 ربات تلگرام
+
+ربات تلگرام به‌صورت اختیاری قابل فعال‌سازی است و امکانات زیر را ارائه می‌دهد:
+
+- ساخت کانفیگ
+- حذف کانفیگ
+- ویرایش کانفیگ
+- فعال / غیرفعال کردن
+- مشاهده‌ی جزئیات
+- مشاهده‌ی آمار و اتصالات
+- مدیریت Sub Group
+- Search و Filter
+- Backup و Restore
+- Export با فرمت JSON / CSV / TXT
+- نمودار مصرف
+- Notification
+- مدیریت Admin
+- QR Code استایل‌دار
+- Inline Mode
+
+### 🌐 زبان ربات
+
+ربات به‌صورت کامل دو زبانه است:
+
+- 🇬🇧 English
+- 🇮🇷 فارسی
+
+در اولین اجرای `/start`، کاربر زبان را انتخاب می‌کند و انتخاب او ذخیره می‌شود. بعد از آن، گزینه‌ی **🌐 Language** داخل منوی اصلی برای تغییر زبان در هر زمان در دسترس است.
+
+---
+
+## 📊 مانیتورینگ
+
+- ترافیک کل
+- مصرف ساعتی
+- تعداد کانفیگ‌ها
+- کانفیگ‌های فعال و منقضی
+- اتصالات زنده
+- IPهای متصل
+- تعداد Sessionها
+- Activity Log
+- Error Log
+- Uptime
+- تست WebSocket
+
+---
+
+## 🔒 امنیت و نگهداری اطلاعات
+
+- Session Cookie با `HttpOnly`
+- `SameSite=Lax`
+- احراز هویت پنل
+- Password Hash بر پایه‌ی SHA-256 و Secret پایدار
+- نگهداری Secret در صورت نیاز روی Storage
+- محدودیت IP برای هر کانفیگ
+- بررسی Active / Expiry / Quota قبل از اجازه‌ی اتصال
+- ذخیره‌ی State در `gateway_state.json`
+
+برای استقرار Railway، مسیر `/data` را به‌صورت Volume متصل کنید تا State و Secret بعد از Restart یا Redeploy از بین نروند.
+
+---
+
+# 🚀 نصب روی Railway
+
+برای این پروژه فقط دو روش نصب پیشنهاد می‌شود:
+
+1. **Fork از GitHub و Deploy از Repository**
+2. **Deploy مستقیم Container از GitHub Container Registry**
+
+Railway هر دو روش را به‌صورت رسمی پشتیبانی می‌کند؛ در روش Repository، سرویس از GitHub ساخته و با تغییرات Branch مجدداً Deploy می‌شود و در روش Container می‌توان مستقیماً یک Image عمومی از GHCR را Deploy کرد. urlراهنمای رسمی Deploy از GitHub و Docker Image در Railwayhttps://docs.railway.com/quick-start
+
+---
+
+## 1️⃣ نصب با Fork از GitHub
+
+### مرحله ۱ — Fork
+
+ابتدا Repository پروژه را در GitHub باز کنید:
+
+```text
+https://github.com/omidiran-gaming/omidiran
 ```
 
-#### 🐳 روش ۲: Docker Compose
+سپس روی **Fork** بزنید و پروژه را داخل اکانت GitHub خودتان کپی کنید.
 
-```yaml
-# docker-compose.yml
-version: "3.9"
+### مرحله ۲ — ساخت پروژه در Railway
 
-services:
-  omidiran:
-    image: ghcr.io/omidiran-gaming/omidiran:latest
-    container_name: omidiran-panel
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/data
-    environment:
-      - ADMIN_USERNAME=omid
-      - ADMIN_PASSWORD=changeme
-      - SECRET_KEY=your-strong-secret-here
-      - TELEGRAM_BOT_TOKEN=
-      - TELEGRAM_ADMIN_IDS=
-      - SUPPORT_URL=https://t.me/omid_gamingORG
-    restart: unless-stopped
+وارد Railway شوید:
+
+```text
+https://railway.com/
 ```
 
 سپس:
 
-```bash
-docker compose up -d
+```text
+New Project
+→ Deploy from GitHub Repo
+→ Connect GitHub
+→ انتخاب Repository فورک‌شده
 ```
 
-#### 🐍 روش ۳: اجرای مستقیم (Python)
+Railway می‌تواند یک Repository را به‌عنوان Service Source استفاده کند و با Push شدن Commit جدید، Deployment جدید انجام دهد. citeturn521299search1turn521299search2
 
-```bash
-# ۱. Clone
-git clone https://github.com/omidiran-gaming/omidiran.git
-cd omidiran
+### مرحله ۳ — Variables
 
-# ۲. محیط مجازی
-python -m venv .venv
-source .venv/bin/activate      # Linux / macOS
-# .venv\Scripts\activate       # Windows
+داخل Service بخش **Variables** این مقادیر را تنظیم کنید:
 
-# ۳. نصب پکیج‌ها
-pip install -r requirements.txt
+```env
+ADMIN_USERNAME=omid
+ADMIN_PASSWORD=یک_رمز_قوی
+SECRET_KEY=یک_کلید_طولانی_و_تصادفی
+DATA_DIR=/data
 
-# ۴. اجرا
-python main.py
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_ADMIN_IDS=
+
+SUPPORT_URL=https://t.me/omid_gamingORG
 ```
 
-پنل روی `http://localhost:8000` در دسترسه.
+`PORT` را لازم نیست دستی قرار دهید؛ Railway در محیط اجرا پورت سرویس را فراهم می‌کند و برنامه از متغیر `PORT` استفاده می‌کند.
+
+### مرحله ۴ — Volume
+
+برای نگهداری State پروژه، یک **Volume** بسازید و آن را روی این مسیر Mount کنید:
+
+```text
+/data
+```
+
+مهم‌ترین اطلاعات پایدار پروژه در همین مسیر نگهداری می‌شوند.
+
+### مرحله ۵ — Deploy
+
+بعد از ذخیره‌ی Variables و Volume، Deployment را اجرا کنید.
+
+بعد از موفق شدن Deployment از بخش **Networking** یک Domain بسازید. Railway برای سرویس‌ها امکان Generate Domain از تنظیمات Networking را فراهم می‌کند. citeturn521299search3
 
 ---
 
-### ⚙️ متغیرهای محیطی
+## 2️⃣ نصب مستقیم Container در Railway
 
-| متغیر | پیش‌فرض | توضیح |
-|-------|---------|-------|
-| `PORT` | `8000` | پورت سرور |
+این روش برای وقتی مناسب است که نخواهید Repository را Fork کنید و مستقیماً Image آماده‌ی پروژه را اجرا کنید.
+
+Image پروژه:
+
+```text
+ghcr.io/omidiran-gaming/omidiran:latest
+```
+
+### مرحله ۱ — ساخت پروژه خالی
+
+در Railway:
+
+```text
+New Project
+→ Empty Project
+```
+
+### مرحله ۲ — ساخت Service
+
+در Project Canvas:
+
+```text
+Add a Service
+→ Docker Image
+```
+
+سپس Image زیر را وارد کنید:
+
+```text
+ghcr.io/omidiran-gaming/omidiran:latest
+```
+
+Railway از GitHub Container Registry پشتیبانی می‌کند و می‌توان Image را مستقیماً از Dashboard به‌عنوان Service اجرا کرد. citeturn521299search0turn521299search1
+
+### مرحله ۳ — Variables
+
+همان Variables روش اول را قرار دهید:
+
+```env
+ADMIN_USERNAME=omid
+ADMIN_PASSWORD=یک_رمز_قوی
+SECRET_KEY=یک_کلید_طولانی_و_تصادفی
+DATA_DIR=/data
+
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_ADMIN_IDS=
+
+SUPPORT_URL=https://t.me/omid_gamingORG
+```
+
+### مرحله ۴ — Volume
+
+یک Railway Volume بسازید و Mount Path را روی:
+
+```text
+/data
+```
+
+قرار دهید.
+
+### مرحله ۵ — Deploy و Domain
+
+روی **Deploy** بزنید و بعد از بالا آمدن سرویس:
+
+```text
+Settings
+→ Networking
+→ Generate Domain
+```
+
+را انجام دهید. citeturn521299search3
+
+---
+
+## ⚙️ متغیرهای محیطی
+
+| متغیر | مقدار پیشنهادی | توضیح |
+|---|---|---|
 | `ADMIN_USERNAME` | `omid` | نام کاربری پنل |
-| `ADMIN_PASSWORD` | `omid` | رمز عبور پنل |
-| `SECRET_KEY` | auto | کلید Session (خودکار ذخیره می‌شه) |
-| `DATA_DIR` | `/data` | مسیر ذخیره‌سازی State |
-| `RAILWAY_PUBLIC_DOMAIN` | `localhost` | دامنه‌ی عمومی |
-| `TELEGRAM_BOT_TOKEN` | — | توکن ربات تلگرام (اختیاری) |
-| `TELEGRAM_ADMIN_IDS` | — | Admin IDها (با کاما) |
-| `SUPPORT_URL` | `https://t.me/omid_gamingORG` | لینک پشتیبانی |
+| `ADMIN_PASSWORD` | یک مقدار قوی | رمز پنل |
+| `SECRET_KEY` | مقدار تصادفی طولانی | Secret مربوط به Session و Hash |
+| `DATA_DIR` | `/data` | مسیر State و Secret |
+| `TELEGRAM_BOT_TOKEN` | خالی / Token | توکن ربات تلگرام |
+| `TELEGRAM_ADMIN_IDS` | خالی / IDها | Admin IDهای ربات |
+| `SUPPORT_URL` | لینک پشتیبانی | لینک پشتیبانی |
+| `PORT` | توسط Railway | پورت اجرای سرویس |
 
-> ⚠️ **مهم:** برای production حتماً `ADMIN_PASSWORD` و `SECRET_KEY` رو تغییر بده.
+### 🔐 نکته مهم درباره Secret
+
+`SECRET_KEY` را ثابت و طولانی انتخاب کنید. تغییر آن می‌تواند روی Sessionها و داده‌هایی که به Secret وابسته هستند اثر بگذارد.
 
 ---
 
-### 🌐 آدرس‌های مهم
+# 🌐 مسیرهای مهم
 
-| مسیر | توضیح |
-|------|-------|
-| `/` | Login Panel |
-| `/dashboard` | پنل ادمین |
-| `/sub/{uuid}` | ساب تکی (با Sub Token یا UUID) |
-| `/sub-all` | ساب همه‌ی کانفیگ‌های فعال |
-| `/sub-group/{key}` | ساب گروه |
-| `/p/{key}` | صفحه‌ی پابلیک گروه |
-| `/ws/{uuid}` | WebSocket Tunnel (VLESS/WS) |
-| `/xhttp-siz10/{mode}/{uuid}` | XHTTP Ultra (3 modes) |
+| مسیر | کاربرد |
+|---|---|
+| `/` | صفحه ورود |
+| `/dashboard` | پنل مدیریت |
+| `/sub/{uuid}` | Subscription یک کانفیگ |
+| `/sub-all` | Subscription همه‌ی کانفیگ‌های فعال |
+| `/sub-group/{key}` | Subscription گروه |
+| `/p/{key}` | Public Page گروه |
+| `/ws/{uuid}` | WebSocket Tunnel |
+| `/xhttp-siz10/{mode}/{uuid}` | XHTTP |
 | `/health` | Health Check |
-| `/stats` | Stats API |
-| `/api/links` | مدیریت کانفیگ‌ها |
+| `/stats` | API آمار |
+| `/api/links` | API مدیریت کانفیگ |
 
 ---
 
-### 📁 ساختار پروژه
+# 📁 ساختار پروژه
 
-```
+```text
 omidiran/
-├── main.py                # FastAPI app + routes
-├── pages.py               # LOGIN_HTML, DASHBOARD_HTML, i18n
-├── public_page.py         # Public subscription pages
-├── relay_vless.py         # VLESS/WS tunnel
-├── relay_vmess.py         # VMess/WS relay
-├── relay_trojan.py        # Trojan/WS relay
-├── xhttp_siz10.py         # XHTTP Ultra transport for VLESS/VMess/Trojan
-├── telegram_bot.py        # Telegram bot integration
+├── main.py
+├── pages.py
+├── public_page.py
+├── relay_vless.py
+├── relay_vmess.py
+├── relay_trojan.py
+├── xhttp_siz10.py
+├── telegram_bot.py
 ├── requirements.txt
 ├── Dockerfile
-├── docker-compose.yml
-└── .github/
-    └── workflows/
-        └── build-and-push.yml
+└── README.md
 ```
 
+### نقش فایل‌ها
+
+| فایل | توضیح |
+|---|---|
+| `main.py` | هسته FastAPI، APIها، State و لینک‌سازی |
+| `pages.py` | Login و Dashboard |
+| `public_page.py` | Public Page و صفحات اشتراک |
+| `relay_vless.py` | Relay مربوط به VLESS |
+| `relay_vmess.py` | Relay مربوط به VMess |
+| `relay_trojan.py` | Relay مربوط به Trojan |
+| `xhttp_siz10.py` | موتور XHTTP برای سه خانواده پروتکل |
+| `telegram_bot.py` | ربات مدیریت تلگرام |
+| `requirements.txt` | وابستگی‌های Python |
+| `Dockerfile` | ساخت Image پروژه |
+
 ---
 
-### 🛠️ توسعه
+# 🧪 بررسی بعد از نصب
 
-```bash
-# نصب وابستگی‌های توسعه
-pip install -r requirements.txt
+بعد از Deploy این موارد را بررسی کنید:
 
-# اجرا با auto-reload
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+### Health
+
+```text
+https://DOMAIN/health
 ```
 
----
+باید پاسخ سرویس را دریافت کنید.
 
-### ⚠️ نکات production
+### پنل
 
-- حتماً **HTTPS/TLS** جلوی سرور (Nginx/Caddy/Traefik) قرار بده
-- از **رمز عبور قوی** برای ادمین استفاده کن
-- `SECRET_KEY` رو در env تنظیم کن
-- Backup از پوشه‌ی `/data` بگیر
-- لاگ‌ها رو مانیتور کن
-
----
-
-### 💬 پشتیبانی
-
-- 📢 **کانال تلگرام:** [@omid_gamingORG](https://t.me/omid_gamingORG)
-- 💬 **پشتیبانی:** [@iran5090](https://t.me/iran5090)
-- 🐛 **گزارش باگ:** [GitHub Issues](https://github.com/omidiran-gaming/omidiran/issues)
-
----
-
-</div>
-
-## 🇬🇧 English
-
-### ✨ About
-
-**OMID-IRAN PANEL** is a modern, fast, and secure management panel for **VLESS/WebSocket** and **XHTTP Ultra (Siz10a)** protocols. Clean design, bilingual UI, and FastAPI-based architecture make it suitable for both personal and small-team use.
-
-### 🌐 Protocol / Transport Matrix
-
-| Protocol | WebSocket | XHTTP packet-up | XHTTP stream-up |
-|----------|-----------|-----------------|-----------------|
-| **VLESS** | ✅ | ✅ | ✅ |
-| **VMess** | ✅ | ✅ | ✅ |
-| **Trojan** | ✅ | ✅ | ✅ |
-
-All 9 protocol/transport combinations are supported.
-
-### 🎯 Key Features
-
-- 🔐 **VLESS/WebSocket** — stable, CDN-compatible transport
-- ⚡ **XHTTP Ultra** — 3 modes: `packet-up`, `stream-up`, `stream-up`
-- 🛡️ **Strict UUID Auth** — only registered UUIDs can connect
-- 🎭 **uTLS Fingerprint** — chrome, firefox, safari, ios, android, ...
-- 🎛️ **Full config management** — quota, expiry, IP/speed limits, sub tokens
-- 👥 **Sub Groups + Public Pages** — with optional password
-- 🎨 **Dual theme** — Dark (OMID Glass) + Light (Arctic Premium)
-- 🌐 **Bilingual** — FA/EN with instant switching
-- 🤖 **Telegram Bot** — optional remote management
-- 📊 **Monitoring** — live traffic, connections, logs
-- 🔒 **Security** — HttpOnly sessions, SHA-256, persistent SECRET_KEY
-
-### 📦 Quick Start
-
-```bash
-# Docker (recommended)
-docker run -d \
-  --name omidiran-panel \
-  -p 8000:8000 \
-  -v omidiran-data:/data \
-  -e ADMIN_USERNAME=omid \
-  -e ADMIN_PASSWORD=changeme \
-  ghcr.io/omidiran-gaming/omidiran:latest
+```text
+https://DOMAIN/
 ```
 
-Open `http://localhost:8000` in your browser.
+با Username و Password تنظیم‌شده وارد شوید.
 
-### 🐍 Python (dev)
+### اولین کارهای پیشنهادی
 
-```bash
-git clone https://github.com/omidiran-gaming/omidiran.git
-cd omidiran
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python main.py
-```
-
-### ⚙️ Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8000` | Server port |
-| `ADMIN_USERNAME` | `omid` | Panel username |
-| `ADMIN_PASSWORD` | `omid` | Panel password |
-| `SECRET_KEY` | auto | Session key (auto-persisted) |
-| `DATA_DIR` | `/data` | State storage directory |
-| `TELEGRAM_BOT_TOKEN` | — | Bot token (optional) |
-| `TELEGRAM_ADMIN_IDS` | — | Admin IDs (comma-separated) |
-| `SUPPORT_URL` | — | Support link |
-
-### 🌐 Endpoints
-
-| Path | Description |
-|------|-------------|
-| `/` | Login |
-| `/dashboard` | Admin panel |
-| `/sub/{uuid}` | Single subscription |
-| `/sub-all` | All active configs |
-| `/sub-group/{key}` | Group subscription |
-| `/p/{key}` | Public group page |
-| `/ws/{uuid}` | VLESS/WS tunnel |
-| `/xhttp-siz10/{mode}/{uuid}` | XHTTP Ultra |
-| `/health` | Health check |
-
-### 📄 License
-
-MIT — see [LICENSE](LICENSE).
+1. یک کانفیگ VLESS / WebSocket بسازید.
+2. لینک را تست کنید.
+3. یک کانفیگ VMess بسازید و لینک را بررسی کنید.
+4. Trojan را تست کنید.
+5. هر دو حالت XHTTP را تست کنید:
+   - `packet-up`
+   - `stream-up`
+6. Public Page و Sub Group را بررسی کنید.
+7. در صورت فعال بودن ربات، `/start` را بفرستید و زبان را انتخاب کنید.
 
 ---
 
-<div align="center">
+# 💾 پشتیبان‌گیری
 
-**Made with ❤️ by OMID Network**
+فایل State اصلی:
 
-⭐ اگه برات مفید بود، یه ستاره بده! · Star this repo if it helps you!
+```text
+/data/gateway_state.json
+```
 
-[🐙 GitHub](https://github.com/omidiran-gaming/omidiran) · [📦 Docker](https://github.com/omidiran-gaming/omidiran/pkgs/container/omidiran) · [💬 Telegram](https://t.me/omid_gamingORG)
+Secret پایدار:
+
+```text
+/data/gateway_secret.key
+```
+
+برای Railway، داشتن Volume روی `/data` مهم است؛ بدون Storage پایدار، با حذف یا بازسازی سرویس ممکن است فایل‌های محلی State و Secret باقی نمانند.
+
+---
+
+# ⚠️ نکات مهم برای Railway
+
+- `ADMIN_PASSWORD` را از مقدار پیش‌فرض تغییر دهید.
+- `SECRET_KEY` را یک مقدار قوی و ثابت قرار دهید.
+- برای `/data` حتماً Volume بسازید.
+- بعد از Deploy یک Domain عمومی ایجاد کنید.
+- Deployment Logs را بعد از اولین راه‌اندازی بررسی کنید.
+- قبل از تغییرات بزرگ، از `gateway_state.json` نسخه پشتیبان بگیرید.
+- اگر از روش Fork استفاده می‌کنید، تغییرات Repository شما می‌تواند Deploymentهای بعدی را ایجاد کند.
+
+---
+
+# 💬 پشتیبانی و لینک‌ها
+
+- 📢 کانال تلگرام: [@omid_gamingORG](https://t.me/omid_gamingORG)
+- 💬 پشتیبانی: [@iran5090](https://t.me/iran5090)
+- 🐙 GitHub: https://github.com/omidiran-gaming/omidiran
+- 📦 Container: https://github.com/omidiran-gaming/omidiran/pkgs/container/omidiran
+
+### 📚 مستندات Railway
+
+- Deploy از GitHub: https://docs.railway.com/quick-start
+- سرویس‌ها و Source: https://docs.railway.com/services
+- Deploy از Docker Image: https://docs.railway.com/quick-start
+
+---
+
+## ❤️ پروژه
+
+**OMID-IRAN PANEL**  
+مدیریت ساده‌تر، رابط تمیزتر و پشتیبانی از چند خانواده‌ی پروتکل در یک پنل.
 
 </div>

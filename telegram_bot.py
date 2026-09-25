@@ -37,6 +37,7 @@ from PIL import Image, ImageDraw
 
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 
@@ -134,6 +135,438 @@ _notified: dict = {}         # uid -> {"expiry": unix_ts, "quota": unix_ts}
 _bot_username: str = ""      # for inline mode
 _default_report_time = "09:00"   # ساعت گزارش روزانه
 _report_last_sent_date = ""      # YYYY-MM-DD
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  BILINGUAL TELEGRAM UI · English is the canonical source language
+# ═══════════════════════════════════════════════════════════════════════════
+_DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+_LANG_FILE = _DATA_DIR / "telegram_languages.json"
+_user_languages: dict[int, str] = {}
+_lang_lock = asyncio.Lock()
+_callback_chats: dict[str, int] = {}
+
+# Persian -> English map. Persian remains the canonical text in this legacy
+# source file; outbound messages/keyboards are translated at the last mile.
+# Long phrases are intentionally listed before short tokens.
+_FA_EN = {
+    "ذخیره‌\u200cی ادمین‌\u200cهای جدید توی main.TELEGRAM + save_state.": "Save new admins to main.TELEGRAM + save_state.",
+    "جمع ترافیک ساعت‌\u200cهای داده‌شده.": "Sum traffic for the selected hours.",
+    "URL عکس نمودار از quickchart.io.": "Chart image URL from quickchart.io.",
+    "♾ نامحدود": "♾ Unlimited",
+    "Inline mode: کاربر @bot name رو تایپ می‌\u200cکنه، لیست کانفیگ‌ها برمی‌گرده.": "Inline mode: type @bot name to return the configuration list.",
+    "هر ۱ ساعت چک می‌\u200cکنه: انقضا نزدیک، اتمام حجم.": "Checks every hour for upcoming expiry and quota exhaustion.",
+    "هر ساعت چک می‌\u200cکنه، اگه ساعت گزارش رسیده بود یه گزارش کامل می‌فرسته.": "Checks hourly and sends the scheduled report when the report time is reached.",
+    "🟢 فعال": "🟢 Active",
+    "🔴 غیرفعال/منقضی": "🔴 Disabled/Expired",
+    "نامحدود": "Unlimited",
+    "بدون انقضا": "No expiry",
+    "وضعیت: ": "Status: ",
+    "مصرف: ": "Usage: ",
+    "سرعت: ": "Speed: ",
+    "آی‌\u200cپی: ": "IP limit: ",
+    "پروتکل: ": "Protocol: ",
+    "پورت: ": "Port: ",
+    "انقضا: ": "Expiry: ",
+    "🔒 دارد": "🔒 Yes",
+    "بدون رمز": "No password",
+    "ساب": "Sub",
+    "توضیحات: ": "Description: ",
+    "کانفیگ‌\u200cها: ": "Configurations: ",
+    "رمز: ": "Password: ",
+    "ساب حرفه‌\u200cای:": "Premium subscription:",
+    "لینک ساب خام:": "Raw subscription link:",
+    "» توی هیچ گروهی نیست.\nبرای داشتن لینک ساب حرفه‌\u200cای، یه گروه انتخاب کن:": "» is not in a group.\nChoose a group to create a premium subscription link:",
+    "🧩 ساخت کانفیگ — ": "🧩 Create Configuration — ",
+    "✏️ اسم کانفیگ:": "✏️ Configuration name:",
+    "🌐 خانواده پروتکل:": "🌐 Protocol family:",
+    "🚚 ترنسپورت:": "🚚 Transport:",
+    "🔤 ALPN (یا تایپ کن):": "🔤 ALPN (or type it):",
+    "📦 حجم: مثلاً <code>10GB</code> یا <code>500MB</code>": "📦 Traffic: e.g. <code>10GB</code> or <code>500MB</code>",
+    "🚀 سرعت (Mbps): مثلاً <code>20</code>": "🚀 Speed (Mbps): e.g. <code>20</code>",
+    "👥 حداکثر آی‌\u200cپی:": "👥 Maximum IPs:",
+    "📅 تعداد روز اعتبار:": "📅 Validity in days:",
+    "پیش‌\u200cفرض": "Default",
+    "🧩 خلاصه — تایید کن:\n\nبرچسب: <b>": "🧩 Summary — confirm:\n\nLabel: <b>",
+    "حجم: ": "Traffic: ",
+    "انقضا: ": "Expiry: ",
+    "📊 <b>آمار سیستم</b>\n": "📊 <b>System Statistics</b>\n",
+    "🔌 اتصالات فعال: <b>": "🔌 Active connections: <b>",
+    "📡 ترافیک امروز: <b>": "📡 Today's traffic: <b>",
+    "📡 کل ترافیک عبوری: <b>": "📡 Total traffic: <b>",
+    "📦 مجموع مصرف کانفیگ‌\u200cها: <b>": "📦 Total configuration usage: <b>",
+    "🗂 کل: <b>": "🗂 Total: <b>",
+    "✅ فعال: <b>": "✅ Active: <b>",
+    "⏰ منقضی: <b>": "⏰ Expired: <b>",
+    "❌ غیرفعال: <b>": "❌ Disabled: <b>",
+    "👥 گروه‌\u200cها: <b>": "👥 Groups: <b>",
+    "⏱ آپتایم: <b>": "⏱ Uptime: <b>",
+    "» توی گروه «": "» is in group «",
+    "» هست.\n\n🔗 ": "» is in it.\n\n🔗 ",
+    "🔌 پورت (": "🔌 Port (",
+    " روز": " days",
+    "از دکمه‌\u200cها استفاده کن:": "Use the buttons below:",
+    "📋 <b>آخرین رخدادها:</b>\n": "📋 <b>Recent activity:</b>\n",
+    "🏆 <b>TOP 10 مصرف‌\u200cکننده:</b>\n": "🏆 <b>TOP 10 Consumers:</b>\n",
+    "\nدرصد: <b>": "\nPercentage: <b>",
+    "\n\nاتصالات فعال: <b>": "\n\nActive connections: <b>",
+    "\nآی‌\u200cپی‌\u200cهای یکتا: <b>": "\nUnique IPs: <b>",
+    "\nسقف آی‌\u200cپی: <b>": "\nIP limit: <b>",
+    "👥 <b>ادمین‌\u200cهای فعلی (": "👥 <b>Current Admins (",
+    "پیدا نشد.": "not found.",
+    "Telegram bot: توکن تنظیم نشده — غیرفعاله.": "Telegram bot: token is not configured — disabled.",
+    "Telegram bot: TELEGRAM_ADMIN_IDS خالیه — کسی نمی‌\u200cتونه مدیریت کنه.": "Telegram bot: TELEGRAM_ADMIN_IDS is empty — nobody can manage the bot.",
+    "◀ قبلی": "◀ Previous",
+    "بعدی ▶": "Next ▶",
+    "➕ کانفیگ جدید": "➕ New Config",
+    "🔍 جستجو": "🔍 Search",
+    "⬅ منو": "⬅ Menu",
+    "⬅ بازگشت": "⬅ Back",
+    "➕ گروه جدید": "➕ New Group",
+    "🆕 ساخت گروه جدید + افزودن": "🆕 Create New Group + Add",
+    "❌ انصراف": "❌ Cancel",
+    "⬅ خانواده پروتکل": "⬅ Protocol Family",
+    " روز)": " days)",
+    "👋 منوی مدیریت:": "👋 Admin Menu:",
+    "لغو شد.": "Cancelled.",
+    "📚 <b>راهنما</b>\n\n/start یا /menu — منوی اصلی\n/cancel — لغو عملیات\n/id — نمایش آیدی تلگرام شما\n/stats — آمار سریع\n/export — دانلود بکاپ\n\nهمه‌\u200cی قابلیت‌\u200cها از طریق دکمه‌\u200cها در دسترسه.": "📚 <b>Help</b>\n\n/start or /menu — main menu\n/cancel — cancel the current operation\n/id — show your Telegram ID\n/stats — quick statistics\n/export — download backup\n\nAll features are available through the buttons.",
+    "💾 پشتیبان کامل": "💾 Full Backup",
+    "کانفیگ": "config",
+    "⚠️ فقط فایل JSON قبول می‌\u200cشه.": "⚠️ Only JSON files are accepted.",
+    "❌ دانلود فایل نشد.": "❌ Failed to download the file.",
+    "❌ ساختار فایل درست نیست.": "❌ Invalid file structure.",
+    "📥 <b>فایل بارگذاری شد</b>\n\nکانفیگ‌\u200cها: ": "📥 <b>File uploaded</b>\n\nConfigurations: ",
+    "\nگروه‌\u200cها: ": "\nGroups: ",
+    "چطور اعمال کنم؟": "How should it be applied?",
+    "• <b>افزودن</b>: کانفیگ‌\u200cهای جدید اضافه میشن، هم‌نام‌\u200cها دست‌\u200cنخورده می‌\u200cمونن": "• <b>Add</b>: new configs are added; duplicates are kept unchanged",
+    "• <b>جایگزینی</b>: همه‌\u200cچی پاک و از فایل بازسازی می‌\u200cشه": "• <b>Replace</b>: everything is cleared and rebuilt from the file",
+    "🌐 سرور: ": "🌐 Server: ",
+    "⛔ دسترسی نداری": "⛔ Access denied",
+    "🔍 عبارت جستجو رو بفرست\n(اسم، یادداشت، Sub Token یا بخشی از UUID)": "🔍 Send a search term\n(name, note, Sub Token, or part of a UUID)",
+    "🏷 فیلتر:": "🏷 Filter:",
+    "🔌 اتصالات (": "🔌 Connections (",
+    " آی‌\u200cپی)\n": " IPs)\n",
+    "📈 نمودار ترافیک ۲۴ ساعت اخیر": "📈 Traffic — Last 24 Hours",
+    "📦 مثلاً <code>10GB</code> یا <code>0</code> برای نامحدود:": "📦 e.g. <code>10GB</code> or <code>0</code> for unlimited:",
+    "➕ چند روز اضافه بشه؟": "➕ How many days should be added?",
+    "📅 تعداد روز (0=بدون انقضا):": "📅 Number of days (0 = no expiry):",
+    "🚀 عدد به Mbps (0=نامحدود):": "🚀 Value in Mbps (0 = unlimited):",
+    "👥 عدد (0=نامحدود):": "👥 Number (0 = unlimited):",
+    "🔤 مقدار ALPN دلخواه (خالی = پیش‌\u200cفرض):": "🔤 Custom ALPN value (empty = default):",
+    "✏️ اسم گروه جدید:": "✏️ New group name:",
+    "✏️ اسم گروه:": "✏️ Group name:",
+    "کدوم کانفیگ؟ (✅ = الان توی گروهه)": "Which config? (✅ = already in the group)",
+    "🆔 آیدی عددی ادمین جدید رو بفرست:": "🆔 Send the new admin's numeric ID:",
+    "کدوم حذف بشه؟": "Which one should be removed?",
+    "💾 <b>پشتیبان‌\u200cگیری</b>\n\n• <b>دانلود پشتیبان</b>: فایل JSON کامل از همه‌\u200cی کانفیگ‌\u200cها و گروه‌\u200cها\n• <b>برگرداندن</b>: فایل JSON رو بفرست تا بازیابی کنم": "💾 <b>Backup</b>\n\n• <b>Download Backup</b>: full JSON of all configs and groups\n• <b>Restore</b>: send a JSON file to restore it",
+    "📥 فایل JSON پشتیبان رو بفرست 👇": "📥 Send the backup JSON file 👇",
+    "📤 فرمت Export:": "📤 Export format:",
+    "🔔 <b>تست نوتیفیکیشن</b>\n\n✅ سیستم اطلاع‌\u200cرسانی فعاله.": "🔔 <b>Notification Test</b>\n\n✅ Notification system is active.",
+    "دکمه منقضی شده": "This button has expired.",
+    "📋 کانفیگ‌\u200cها": "📋 Configs",
+    "🏷 فیلتر": "🏷 Filter",
+    "🗂 گروه‌\u200cهای ساب": "🗂 Subscription Groups",
+    "📊 آمار": "📊 Statistics",
+    "🔌 اتصالات": "🔌 Connections",
+    "📈 نمودار ترافیک": "📈 Traffic Chart",
+    "🏆 TOP مصرف": "🏆 Top Usage",
+    "📋 لاگ‌\u200cها": "📋 Logs",
+    "💾 پشتیبان/برگرداندن": "💾 Backup/Restore",
+    "👥 ادمین‌\u200cها": "👥 Admins",
+    "🔔 تست نوتیفیکیشن": "🔔 Test Notifications",
+    "🌐 زبان / Language": "🌐 Language",
+    "⬅ Menu / منو": "⬅ Menu",
+    "🔄 رفرش": "🔄 Refresh",
+    "همه": "All",
+    "فعال": "Active",
+    "منقضی": "Expired",
+    "غیرفعال": "Disabled",
+    "بدون گروه": "No Group",
+    "دارای گروه": "In Group",
+    "🔗 نمایش لینک": "🔗 Show Link",
+    "✏️ ویرایش": "✏️ Edit",
+    "🔄 ریست مصرف": "🔄 Reset Usage",
+    "🗂 گروه ساب": "🗂 Sub Group",
+    "📊 آمار کانفیگ": "📊 Config Stats",
+    "📤 Export این کانفیگ": "📤 Export This Config",
+    "🗑 حذف": "🗑 Delete",
+    "⬅ لیست": "⬅ List",
+    "✅ بله": "✅ Yes",
+    "🏷 نام": "🏷 Name",
+    "📦 سهمیه": "📦 Quota",
+    "📅 انقضا": "📅 Expiry",
+    "🚀 سرعت": "🚀 Speed",
+    "👥 آی‌\u200cپی": "👥 IP Limit",
+    "🔌 پورت": "🔌 Port",
+    "✏️ دلخواه": "✏️ Custom",
+    "۷ روز": "7 days",
+    "۳۰ روز": "30 days",
+    "۹۰ روز": "90 days",
+    "۱ روز": "1 day",
+    "۱۸۰ روز": "180 days",
+    "۳۶۵ روز": "365 days",
+    "♾ بدون انقضا": "♾ No Expiry",
+    "➕ تمدید (افزودن روز)": "➕ Extend (Add Days)",
+    "۱ Mbps": "1 Mbps",
+    "۵ Mbps": "5 Mbps",
+    "۱۰ Mbps": "10 Mbps",
+    "۲۰ Mbps": "20 Mbps",
+    "۵۰ Mbps": "50 Mbps",
+    "۱۰۰ Mbps": "100 Mbps",
+    "⏭ پیش‌\u200cفرض پروتکل": "⏭ Protocol Default",
+    "➕ افزودن کانفیگ": "➕ Add Config",
+    "🔗 نمایش لینک حرفه‌\u200cای": "🔗 Show Premium Link",
+    "🗑 حذف گروه": "🗑 Delete Group",
+    "➕ افزودن ادمین": "➕ Add Admin",
+    "➖ حذف ادمین": "➖ Remove Admin",
+    "💾 دانلود پشتیبان (JSON)": "💾 Download Backup (JSON)",
+    "📥 برگرداندن از فایل": "📥 Restore From File",
+    "📃 لیست متنی لینک‌\u200cها": "📃 Text List of Links",
+    "⏭ پیش‌\u200cفرض": "⏭ Default",
+    "✅ ساخت کانفیگ": "✅ Create Config",
+    "آیدی شما: <code>": "Your ID: <code>",
+    " نتیجه:": " results:",
+    "کانفیگ حذف شده.": "The config was deleted.",
+    "✅ تغییر اعمال شد.\n\n": "✅ Changes applied.\n\n",
+    "از دکمه‌\u200cها 👆": "Use the buttons above 👆",
+    "هنوز کانفیگی نیست.": "No configurations yet.",
+    "📋 کانفیگ‌\u200cها (": "📋 Configs (",
+    "چیزی با این فیلتر نیست.": "Nothing matches this filter.",
+    " مورد:": " items:",
+    "امروز": "Today",
+    "این هفته": "This Week",
+    "این ماه": "This Month",
+    "📊 ترافیک ": "📊 Traffic ",
+    "🔌 اتصالی نیست.": "🔌 No active connections.",
+    " سشن": " sessions",
+    "\n<i>... و ": "\n<i>... and ",
+    " مورد</i>": " more</i>",
+    "📋 لاگی نیست.": "📋 No logs.",
+    "📈 داده‌\u200cای برای نمودار نیست.": "📈 No chart data available.",
+    "کانفیگی نیست.": "No configuration.",
+    "پیدا نشد": "Not found",
+    "❗️ حذف «": "❗️ Delete «",
+    "»؟": "»?",
+    "قبلاً حذف شده.": "It was already deleted.",
+    "🔄 مصرف فعلی: <b>": "🔄 Current usage: <b>",
+    "</b>\nمطمئنی؟": "</b>\nAre you sure?",
+    "✅ ریست شد.\n\n": "✅ Reset.\n\n",
+    "✏️ ویرایش «": "✏️ Edit «",
+    "🏷 نام فعلی: <b>": "🏷 Current name: <b>",
+    "</b>\nنام جدید:": "</b>\nNew name:",
+    "📦 فعلی: <b>": "📦 Current: <b>",
+    "</b>\nجدید:": "</b>\nNew:",
+    "✅ اعمال شد.\n\n": "✅ Applied.\n\n",
+    "📅 فعلی: <b>": "📅 Current: <b>",
+    "🚀 فعلی: <b>": "🚀 Current: <b>",
+    "👥 فعلی: <b>": "👥 Current: <b>",
+    "🌐 پروتکل فعلی: <b>": "🌐 Current protocol: <b>",
+    "</b>\n\nخانواده جدید رو انتخاب کن:": "</b>\n\nChoose the new family:",
+    "</b>\n\nترنسپورت رو انتخاب کن:": "</b>\n\nChoose the new transport:",
+    "پروتکل نامعتبر": "Invalid protocol",
+    "✅ پروتکل تغییر کرد.\n\n": "✅ Protocol changed.\n\n",
+    "🔑 Sub Token فعلی: <code>": "🔑 Current Sub Token: <code>",
+    "</code>\n\nجدید (۳ تا ۳۲ حرف، فقط a-z A-Z 0-9 _ -):\nبرای پاک کردن، <code>-</code> بفرست.": "</code>\n\nNew value (3–32 chars, only a-z A-Z 0-9 _ -):\nSend <code>-</code> to clear it.",
+    "🎭 فعلی: <b>": "🎭 Current: <b>",
+    "🔤 فعلی: <b>": "🔤 Current: <b>",
+    "🔌 فعلی: <b>": "🔌 Current: <b>",
+    "منقضی شده": "Expired",
+    "گروه نیست": "No group",
+    "✅ اضافه شد.\n\n": "✅ Added.\n\n",
+    "هنوز گروهی نیست.": "No groups yet.",
+    " گروه:": " groups:",
+    "🔗 <b>لینک ساب حرفه‌\u200cای «": "🔗 <b>Premium Subscription «",
+    "»</b>\n\nصفحه‌\u200cی پابلیک:\n<code>": "»</b>\n\nPublic page:\n<code>",
+    "</code>\n\nلینک ساب خام:\n<code>": "</code>\n\nRaw subscription link:\n<code>",
+    "📷 ساب «": "📷 Sub «",
+    "کانفیگ نیست": "No configuration",
+    "❗️ حذف گروه «": "❗️ Delete group «",
+    "»؟\n(کانفیگ‌\u200cها حذف نمی‌شن، فقط از گروه خارج می‌شن)": "»?\n(Configs are not deleted; they are only removed from the group.)",
+    "ادمینی نیست.": "No admins.",
+    "خودت رو نمی‌\u200cتونی حذف کنی!": "You cannot remove yourself!",
+    "✅ بازیابی انجام شد.\n\nافزوده‌\u200cشده: <b>": "✅ Restore completed.\n\nAdded: <b>",
+    "</b>\nرد‌\u200cشده (تکراری): <b>": "</b>\nSkipped (duplicate): <b>",
+    "</b>\nکل الان: <b>": "</b>\nCurrent total: <b>",
+    "📃 لینک‌\u200cها": "📃 Links",
+    "🔔 نوتیفیکیشن‌\u200cها فعالن:\n\n• انقضا: ۲۴ ساعت قبل\n• اتمام حجم: بلافاصله بعد از رسیدن به سقف\n• بررسی: هر ۱ ساعت": "🔔 Notifications enabled:\n\n• Expiry: 24 hours before\n• Quota: immediately after reaching the limit\n• Check interval: every hour",
+    "این مرحله منقضی شده.": "This step has expired.",
+    "📅 <b>گزارش روزانه ": "📅 <b>Daily Report ",
+    "⛔ غیرفعال": "⛔ Disabled",
+    "✅ فعال": "✅ Active",
+    "➖ خروج از گروه": "➖ Remove From Group",
+    "⛔ شما ادمین نیستید.\nآیدی تلگرام شما: <code>": "⛔ You are not an admin.\nYour Telegram ID: <code>",
+    "</code>\nاز ادمین اصلی بخواید این آیدی رو اضافه کنه.": "</code>\nAsk the main admin to add this ID.",
+    "🔍 نتیجه‌\u200cای برای «": "🔍 No result for «",
+    "» پیدا نشد.": "» was found.",
+    "✅ گروه ساخته و کانفیگ اضافه شد.\n\n": "✅ Group created and config added.\n\n",
+    "✅ گروه ساخته شد.\n\n": "✅ Group created.\n\n",
+    "❗️ فرمت: <code>10GB</code> یا <code>500MB</code>": "❗️ Format: <code>10GB</code> or <code>500MB</code>",
+    "❗️ عدد (Mbps):": "❗️ Number (Mbps):",
+    "❗️ عدد صحیح:": "❗️ Integer required:",
+    "❗️ عدد صحیح (روز):": "❗️ Integer required (days):",
+    "❌ JSON نامعتبر: ": "❌ Invalid JSON: ",
+    "✅ افزودن ": "✅ Add ",
+    " کانفیگ": " config(s)",
+    "🔄 جایگزینی کامل": "🔄 Full Replace",
+    "📅 امروز": "📅 Today",
+    "📆 هفته": "📆 Week",
+    "🗓 ماه": "🗓 Month",
+    "🔄 بروزرسانی": "🔄 Refresh",
+    "» حذف شد.": "» deleted.",
+    "آیدی نامعتبر": "Invalid ID",
+    "📃 <b>لینک‌\u200cها:</b>\n\n<code>": "📃 <b>Links:</b>\n\n<code>",
+    "✅ ساخته شد.\n\n": "✅ Created.\n\n",
+    "🚫 کانفیگ «": "🚫 Config «",
+    "» به سقف حجم رسید!\nمصرف: ": "» reached its quota limit!\nUsage: ",
+    "❌ خطا: ": "❌ Error: ",
+    "⏭ پیش‌\u200cفرض (": "⏭ Default (",
+    "❗️ پورت ": "❗️ Port ",
+    "🔔 ارسال تست": "🔔 Send Test",
+    "📋 کپی": "📋 Copy",
+    "⚠️ کانفیگ «": "⚠️ Config «",
+    "» تا ": "» expires in ",
+    " ساعت دیگه منقضی می‌\u200cشه!": " hours!",
+    "❗️ یه عدد صحیح:": "❗️ Enter an integer:",
+    "❗️ عدد مثبت:": "❗️ Enter a positive number:",
+    "❗️ عدد به Mbps:": "❗️ Enter a value in Mbps:",
+    "❗️ فقط حروف/عدد/-/_ (۳ تا ۳۲ کاراکتر)": "❗️ Only letters/numbers/-/_ (3–32 characters)",
+    "» قبلاً استفاده شده": "» is already in use",
+    "فیلد ناشناخته.": "Unknown field.",
+    "❗️ پورت بین ": "❗️ Port must be between ",
+    "❗️ آیدی عددی بفرست:": "❗️ Send a numeric ID:",
+    "✅ ادمین <code>": "✅ Admin <code>",
+    "</code> اضافه شد.": "</code> added.",
+    "</code> از قبل ادمین بود.": "</code> was already an admin.",
+}
+
+# Extra compact replacements for common Persian words/labels that can occur
+# inside dynamic strings. Longest replacements above run first.
+
+_FA_EN.update({
+    "ذخیره‌\u200cی ادمین‌\u200cهای جدید توی main.TELEGRAM + save_state.": "Save new admins to main.TELEGRAM + save_state.",
+    "جمع ترافیک ساعت‌\u200cهای داده‌\u200cشده.": "Sum traffic for the selected hours.",
+    "Inline mode: کاربر @bot name رو تایپ می‌\u200cکنه، لیست کانفیگ‌\u200cها برمی‌\u200cگرده.": "Inline mode: type @bot name to return the configuration list.",
+    "هر ۱ ساعت چک می‌\u200cکنه: انقضا نزدیک، اتمام حجم.": "Checks every hour for upcoming expiry and quota exhaustion.",
+    "هر ساعت چک می‌\u200cکنه، اگه ساعت گزارش رسیده بود یه گزارش کامل می‌\u200cفرسته.": "Checks hourly and sends the full report when the scheduled time is reached.",
+    "\nآی‌\u200cپی: ": "\nIP limit: ",
+    "\n\n🔗 ساب حرفه‌\u200cای:\n<code>": "\n\n🔗 Premium subscription:\n<code>",
+    "» توی هیچ گروهی نیست.\nبرای داشتن لینک ساب حرفه‌\u200cای، یه گروه انتخاب کن:": "» is not in any group.\nChoose a group to create a premium subscription link:",
+    "👥 حداکثر آی‌\u200cپی:": "👥 Maximum IPs:",
+    "</b>\n📦 مجموع مصرف کانفیگ‌\u200cها: <b>": "</b>\n📦 Total configuration usage: <b>",
+    "از دکمه‌\u200cها استفاده کن:": "Use the buttons below:",
+    "</b>\nآی‌\u200cپی‌\u200cهای یکتا: <b>": "</b>\nUnique IPs: <b>",
+    "</b>\nسقف آی‌\u200cپی: <b>": "</b>\nIP limit: <b>",
+    "👥 <b>ادمین‌\u200cهای فعلی (": "👥 <b>Current Admins (",
+    "Telegram bot: TELEGRAM_ADMIN_IDS خالیه — کسی نمی‌\u200cتونه مدیریت کنه.": "Telegram bot: TELEGRAM_ADMIN_IDS is empty — nobody can manage the bot.",
+    "📚 <b>راهنما</b>\n\n/start یا /menu — منوی اصلی\n/cancel — لغو عملیات\n/id — نمایش آیدی تلگرام شما\n/stats — آمار سریع\n/export — دانلود بکاپ\n\nهمه‌\u200cی قابلیت‌\u200cها از طریق دکمه‌\u200cها در دسترسه.": "📚 <b>Help</b>\n\n/start or /menu — main menu\n/cancel — cancel the current operation\n/id — show your Telegram ID\n/stats — quick statistics\n/export — download backup\n\nAll features are available through the buttons.",
+    "⚠️ فقط فایل JSON قبول می‌\u200cشه.": "⚠️ Only JSON files are accepted.",
+    "📥 <b>فایل بارگذاری شد</b>\n\nکانفیگ‌\u200cها: ": "📥 <b>File uploaded</b>\n\nConfigurations: ",
+    "\n\nچطور اعمال کنم؟\n• <b>افزودن</b>: کانفیگ‌\u200cهای جدید اضافه میشن، هم‌نام‌\u200cها دست‌\u200cنخورده می‌\u200cمونن\n• <b>جایگزینی</b>: همه‌\u200cچی پاک و از فایل بازسازی می‌\u200cشه": "\n\nHow should it be applied?\n• <b>Add</b>: new configs are added; duplicates stay unchanged\n• <b>Replace</b>: everything is cleared and rebuilt from the file",
+    " آی‌\u200cپی)\n": " IPs)\n",
+    "🔤 مقدار ALPN دلخواه (خالی = پیش‌\u200cفرض):": "🔤 Custom ALPN value (empty = default):",
+    "</code> حذف شد.\n\n👥 <b>ادمین‌\u200cهای فعلی:</b>\n": "</code> deleted.\n\n👥 <b>Current Admins:</b>\n",
+    "💾 <b>پشتیبان‌\u200cگیری</b>\n\n• <b>دانلود پشتیبان</b>: فایل JSON کامل از همه‌\u200cی کانفیگ‌\u200cها و گروه‌\u200cها\n• <b>برگرداندن</b>: فایل JSON رو بفرست تا بازیابی کنم": "💾 <b>Backup</b>\n\n• <b>Download Backup</b>: full JSON of all configs and groups\n• <b>Restore</b>: send a JSON file to restore it",
+    "🔔 <b>تست نوتیفیکیشن</b>\n\n✅ سیستم اطلاع‌\u200cرسانی فعاله.": "🔔 <b>Notification Test</b>\n\n✅ Notification system is active.",
+    "🗂 گروه‌\u200cهای ساب": "🗂 Subscription Groups",
+    "📋 لاگ‌\u200cها": "📋 Logs",
+    "👥 ادمین‌\u200cها": "👥 Admins",
+    "👥 آی‌\u200cپی": "👥 IP Limit",
+    "⏭ پیش‌\u200cفرض پروتکل": "⏭ Protocol Default",
+    "🔗 نمایش لینک حرفه‌\u200cای": "🔗 Show Premium Link",
+    "📃 لیست متنی لینک‌\u200cها": "📃 Text List of Links",
+    "⏭ پیش‌\u200cفرض": "⏭ Default",
+    "از دکمه‌\u200cها 👆": "Use the buttons above 👆",
+    "زبان تغییر کرد": "Language changed",
+    "📈 داده‌\u200cای برای نمودار نیست.": "📈 No chart data available.",
+    "🔗 <b>لینک ساب حرفه‌\u200cای «": "🔗 <b>Premium subscription «",
+    "»</b>\n\nصفحه‌\u200cی پابلیک:\n<code>": "»</b>\n\nPublic page:\n<code>",
+    "»؟\n(کانفیگ‌\u200cها حذف نمی‌شن، فقط از گروه خارج می‌شن)": "»?\n(Configs are not deleted; they are only removed from the group.)",
+    "خودت رو نمی‌\u200cتونی حذف کنی!": "You cannot remove yourself!",
+    "✅ بازیابی انجام شد.\n\nافزوده‌\u200cشده: <b>": "✅ Restore completed.\n\nAdded: <b>",
+    "</b>\nرد‌\u200cشده (تکراری): <b>": "</b>\nSkipped (duplicate): <b>",
+    "📃 لینک‌\u200cها": "📃 Links",
+    "🔔 نوتیفیکیشن‌\u200cها فعالن:\n\n• انقضا: ۲۴ ساعت قبل\n• اتمام حجم: بلافاصله بعد از رسیدن به سقف\n• بررسی: هر ۱ ساعت": "🔔 Notifications enabled:\n\n• Expiry: 24 hours before\n• Quota: immediately after reaching the limit\n• Check: every hour",
+    "🔍 نتیجه‌\u200cای برای «": "🔍 No result for «",
+    "📃 <b>لینک‌\u200cها:</b>\n\n<code>": "📃 <b>Links:</b>\n\n<code>",
+    "⏭ پیش‌\u200cفرض (": "⏭ Default (",
+    " ساعت دیگه منقضی می‌\u200cشه!": " hours!",
+})
+_PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+
+def _norm_fa(s: str) -> str:
+    # Normalize Persian ZWNJ so old/new strings with one or more ZWNJ characters
+    # always resolve to the same canonical translation key.
+    return str(s).replace("\u200c", "")
+
+_FA_EN_NORM = {_norm_fa(k): v for k, v in _FA_EN.items()}
+
+def _localize_text(text: str, lang: str) -> str:
+    if not isinstance(text, str) or lang != "en":
+        return text
+    out = _norm_fa(text)
+    for src in sorted(_FA_EN_NORM, key=len, reverse=True):
+        out = out.replace(src, _FA_EN_NORM[src])
+    return out.translate(_PERSIAN_DIGITS)
+
+
+def _localize_kb(obj: dict | None, lang: str):
+    if not obj or lang != "en":
+        return obj
+    def walk(v, key=None):
+        if isinstance(v, dict):
+            return {k: walk(val, k) for k, val in v.items()}
+        if isinstance(v, list):
+            return [walk(x, key) for x in v]
+        if key in {"text", "caption", "description", "title", "message_text"} and isinstance(v, str):
+            return _localize_text(v, lang)
+        return v
+    return walk(obj)
+
+
+async def _load_languages():
+    global _user_languages
+    try:
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if _LANG_FILE.exists():
+            data = json.loads(_LANG_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                _user_languages = {int(k): v for k, v in data.items() if v in ("fa", "en")}
+    except Exception as e:
+        logger.warning(f"Telegram language settings load failed: {e}")
+
+
+async def _save_languages():
+    try:
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _LANG_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({str(k): v for k, v in _user_languages.items()}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_LANG_FILE)
+    except Exception as e:
+        logger.warning(f"Telegram language settings save failed: {e}")
+
+
+def _get_lang(chat_id: int | None) -> str | None:
+    return _user_languages.get(int(chat_id)) if chat_id is not None else None
+
+
+async def _set_lang(chat_id: int, lang: str):
+    if lang not in ("fa", "en"):
+        return
+    _user_languages[int(chat_id)] = lang
+    await _save_languages()
+
+
+def _language_choice_kb(back_to_menu: bool = False):
+    rows = [
+        [{"text": "🇬🇧 English", "callback_data": "setlang:en"},
+         {"text": "🇮🇷 فارسی", "callback_data": "setlang:fa"}],
+    ]
+    if back_to_menu:
+        rows.append([{"text": "⬅ Menu / منو", "callback_data": "menu"}])
+    return {"inline_keyboard": rows}
+
+
+def _language_choice_text():
+    return "🌐 <b>Choose your language</b>\n\nSelect the language for this bot:"
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  HELPERS
@@ -244,25 +677,30 @@ async def _call(method: str, **params):
         return None
 
 async def _send(chat_id: int, text: str, kb: dict | None = None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    if kb: payload["reply_markup"] = kb
+    lang = _get_lang(chat_id) or "en"
+    payload = {"chat_id": chat_id, "text": _localize_text(text, lang), "parse_mode": "HTML", "disable_web_page_preview": True}
+    if kb: payload["reply_markup"] = _localize_kb(kb, lang)
     return await _call("sendMessage", **payload)
 
 async def _edit(chat_id: int, message_id: int, text: str, kb: dict | None = None):
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": text,
+    lang = _get_lang(chat_id) or "en"
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": _localize_text(text, lang),
                "parse_mode": "HTML", "disable_web_page_preview": True}
-    if kb: payload["reply_markup"] = kb
+    if kb: payload["reply_markup"] = _localize_kb(kb, lang)
     res = await _call("editMessageText", **payload)
     if res is None or not res.get("ok"):
         await _send(chat_id, text, kb)
 
 async def _answer_cb(cb_id: str, text: str = "", alert: bool = False):
-    await _call("answerCallbackQuery", callback_query_id=cb_id, text=text, show_alert=alert)
+    chat_id = _callback_chats.get(cb_id)
+    lang = _get_lang(chat_id) or "en"
+    await _call("answerCallbackQuery", callback_query_id=cb_id, text=_localize_text(text, lang), show_alert=alert)
 
 async def _send_photo(chat_id: int, photo_url: str, caption: str = "", kb: dict | None = None):
+    lang = _get_lang(chat_id) or "en"
     payload = {"chat_id": chat_id, "photo": photo_url, "parse_mode": "HTML"}
-    if caption: payload["caption"] = caption
-    if kb: payload["reply_markup"] = kb
+    if caption: payload["caption"] = _localize_text(caption, lang)
+    if kb: payload["reply_markup"] = _localize_kb(kb, lang)
     return await _call("sendPhoto", **payload)
 
 
@@ -271,11 +709,12 @@ async def _send_photo_bytes(chat_id: int, filename: str, content: bytes, caption
     if _client is None:
         return None
     try:
+        lang = _get_lang(chat_id) or "en"
         data = {"chat_id": str(chat_id), "parse_mode": "HTML"}
         if caption:
-            data["caption"] = caption
+            data["caption"] = _localize_text(caption, lang)
         if kb:
-            data["reply_markup"] = json.dumps(kb, ensure_ascii=False, separators=(",", ":"))
+            data["reply_markup"] = json.dumps(_localize_kb(kb, lang), ensure_ascii=False, separators=(",", ":"))
         files = {"photo": (filename, content, "image/png")}
         r = await _client.post(f"{_api_base()}/sendPhoto", data=data, files=files, timeout=60)
         result = r.json()
@@ -367,9 +806,10 @@ def _build_styled_qr_png(data: str, size: int = 560) -> bytes:
 async def _send_document(chat_id: int, filename: str, content: bytes, caption: str = ""):
     if _client is None: return None
     try:
+        lang = _get_lang(chat_id) or "en"
         files = {"document": (filename, content, "application/octet-stream")}
         data = {"chat_id": str(chat_id), "parse_mode": "HTML"}
-        if caption: data["caption"] = caption
+        if caption: data["caption"] = _localize_text(caption, lang)
         r = await _client.post(f"{_api_base()}/sendDocument", data=data, files=files, timeout=60)
         return r.json()
     except Exception as e:
@@ -415,6 +855,7 @@ def _main_menu_kb():
          {"text": "📤 Export", "callback_data": "export"}],
         [{"text": "👥 ادمین‌ها", "callback_data": "admins"},
          {"text": "🔔 تست نوتیفیکیشن", "callback_data": "testnotif"}],
+        [{"text": "🌐 زبان / Language", "callback_data": "langmenu"}],
         [{"text": "🔄 رفرش", "callback_data": "menu"}],
     ]}
 
@@ -898,9 +1339,17 @@ async def _handle_message(msg: dict):
     text = (msg.get("text") or "").strip()
     if chat_id is None: return
 
-    # /start برای همه باز باشه اگه تو ادمینا هست
+    # First contact: ask for the language before showing anything else.
+    if text == "/start" and _get_lang(chat_id) is None:
+        await _send(chat_id, _language_choice_text(), _language_choice_kb())
+        return
+
+    if text == "/language":
+        await _send(chat_id, _language_choice_text(), _language_choice_kb(back_to_menu=_is_admin(chat_id)))
+        return
+
     if not _is_admin(chat_id):
-        # اگه تو ادمینا نیست، فقط /start رو نشون بده با آیدی خودش
+        # Keep /start useful for non-admins after language selection.
         if text == "/start":
             await _send(chat_id, f"⛔ شما ادمین نیستید.\nآیدی تلگرام شما: <code>{chat_id}</code>\n"
                                   f"از ادمین اصلی بخواید این آیدی رو اضافه کنه.")
@@ -1205,7 +1654,31 @@ async def _handle_callback(cb: dict):
     message_id = cb.get("message", {}).get("message_id")
     data = cb.get("data", "")
     cb_id = cb.get("id")
-    if chat_id is None or not _is_admin(chat_id):
+    if chat_id is None:
+        return
+    if cb_id:
+        _callback_chats[cb_id] = int(chat_id)
+
+    # Language selection is available even before admin authorization so the
+    # first /start flow can be completed in the user's preferred language.
+    if data == "langmenu":
+        await _answer_cb(cb_id)
+        await _edit(chat_id, message_id, _language_choice_text(), _language_choice_kb(back_to_menu=_is_admin(chat_id)))
+        return
+    if data.startswith("setlang:"):
+        lang = data.split(":", 1)[1]
+        if lang not in ("fa", "en"):
+            await _answer_cb(cb_id, "Invalid language")
+            return
+        await _set_lang(chat_id, lang)
+        await _answer_cb(cb_id, "Language changed" if lang == "en" else "زبان تغییر کرد")
+        if _is_admin(chat_id):
+            await _edit(chat_id, message_id, "👋 منوی مدیریت:", _main_menu_kb())
+        else:
+            await _edit(chat_id, message_id, "⛔ شما ادمین نیستید.\nآیدی تلگرام شما: <code>" + str(chat_id) + "</code>\nاز ادمین اصلی بخواید این آیدی رو اضافه کنه.", _language_choice_kb())
+        return
+
+    if not _is_admin(chat_id):
         await _answer_cb(cb_id, "⛔ دسترسی نداری"); return
     await _answer_cb(cb_id)
 
@@ -2055,6 +2528,7 @@ async def _handle_inline(q: dict):
         try:
             share_link = vless_link_for_link(l, uid, get_host())
         except Exception: continue
+        lang = _get_lang(from_id) or "en"
         results.append({
             "type": "article",
             "id": uid,
@@ -2065,7 +2539,7 @@ async def _handle_inline(q: dict):
                 "parse_mode": "HTML",
             },
             "reply_markup": {"inline_keyboard": [[
-                {"text": "📋 کپی", "switch_inline_query_current_chat": ""}
+                {"text": _localize_text("📋 کپی", lang), "switch_inline_query_current_chat": ""}
             ]]},
         })
         if len(results) >= 20: break
@@ -2188,6 +2662,7 @@ async def start_bot():
     if _running and _poll_task and not _poll_task.done():
         await stop_bot()
 
+    await _load_languages()
     _client = httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=10.0))
 
     # 🌐 pre-fetch server info (برای نمایش توی آمار)

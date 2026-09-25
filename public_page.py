@@ -1,27 +1,27 @@
 # public_page.py
-# صفحه‌ی پابلیک ساب — UI مدرن اپ‌مانند
-# از pages.py جدا شده برای نگهداری بهتر
+# Public subscription pages — modern app-like UI
+# Kept separate from pages.py for maintainability
 #
 # ═══════════════════════════════════════════════════════════════════════
 # THEME SYSTEM
 # ─────────────────────────────────────────────────────────────────────
-# این فایل از یک سیستم تم بر پایه CSS Variables استفاده می‌کند.
+# This file uses a CSS-variable theme system.
 #
-#   :root                   →  تم تاریک (OMID Glass Premium · purple/pink)
-#   html[data-theme="light"] →  تم روشن (Arctic Premium · matte turquoise / ice cyan)
+#   :root                   →  Dark theme (OMID Glass Premium · purple/pink)
+#   html[data-theme="light"] →  Light theme (Arctic Premium · matte turquoise / ice cyan)
 #
-# همه‌ی کامپوننت‌ها از var(--token) استفاده می‌کنند، پس تغییر تم خودکار
-# در همه‌جا اعمال می‌شود و نیازی به !important override نیست.
+# All components use var(--token), so theme changes propagate automatically.
+# No !important overrides are required.
 #
-# برای تغییر رنگ‌ها فقط کافیست توکن‌های داخل :root و
-# html[data-theme="light"] را ویرایش کنید.
+# To change the palette, edit the tokens in :root and
+# html[data-theme="light"].
 # ═══════════════════════════════════════════════════════════════════════
 
 from pages import LOGO_B64
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# SHARED THEME CSS — توکن‌های تم مشترک بین سه صفحه‌ی پابلیک
+# SHARED THEME CSS — tokens shared by the public pages
 # ═══════════════════════════════════════════════════════════════════════
 _THEME_CSS = r'''
 /* ═══════════════════════════════════════════════════════════════════════
@@ -189,7 +189,7 @@ a{color:inherit;text-decoration:none}
 # PUBLIC PAGE — Subscription landing (app-like UI)
 # ═══════════════════════════════════════════════════════════════════════
 PUBLIC_PAGE_HTML_TEMPLATE = r'''<!DOCTYPE html>
-<html lang="fa" dir="rtl" data-theme="dark" data-lang="fa">
+<html lang="en" dir="ltr" data-theme="dark" data-lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -661,7 +661,7 @@ __THEME_CSS__
     <div class="lock-banner">
       <div class="lock-icon"><i class="ti ti-shield-lock"></i></div>
       <div class="lock-title" id="lockName">—</div>
-      <div class="lock-sub" data-i18n="lock_sub">این گروه با رمز محافظت شده. برای دیدن کانفیگ‌ها رمز را وارد کنید.</div>
+      <div class="lock-sub" data-i18n="lock_sub">This group is password protected. Enter the password to view configurations.</div>
     </div>
     <div class="lock-form">
       <div class="lock-error" id="lockError"></div>
@@ -671,7 +671,7 @@ __THEME_CSS__
       </div>
       <button class="btn-primary" onclick="submitLock()">
         <i class="ti ti-lock-open"></i>
-        <span data-i18n="enter">ورود به گروه</span>
+        <span data-i18n="enter">Enter Group</span>
       </button>
     </div>
   </div>
@@ -708,15 +708,15 @@ __THEME_CSS__
           <div class="hero-title" id="heroTitle">—</div>
           <div class="hero-desc" id="heroDesc"></div>
         </div>
-        <span class="hero-badge" id="heroBadge"><span class="status-dot"></span> <span data-i18n="online">آنلاین</span></span>
+        <span class="hero-badge" id="heroBadge"><span class="status-dot"></span> <span data-i18n="online">Online</span></span>
       </div>
       <div class="hero-stats">
         <div class="hero-stat">
-          <div class="hero-stat-label"><i class="ti ti-plug-connected"></i> <span data-i18n="live_conns">اتصالات زنده</span></div>
+          <div class="hero-stat-label"><i class="ti ti-plug-connected"></i> <span data-i18n="live_conns">Live Connections</span></div>
           <div class="hero-stat-val" id="statConns">—</div>
         </div>
         <div class="hero-stat">
-          <div class="hero-stat-label"><i class="ti ti-chart-pie"></i> <span data-i18n="active_cfgs">کانفیگ فعال</span></div>
+          <div class="hero-stat-label"><i class="ti ti-chart-pie"></i> <span data-i18n="active_cfgs">Active Configurations</span></div>
           <div class="hero-stat-val" id="statActive">—</div>
           <div class="hero-stat-sub" id="statActiveSub">—</div>
         </div>
@@ -733,25 +733,25 @@ __THEME_CSS__
     <div class="quick-actions">
       <button class="action-btn primary" onclick="openImportSheet()">
         <i class="ti ti-rocket"></i>
-        <span data-i18n="import">افزودن به کلاینت</span>
+        <span data-i18n="import">Import</span>
       </button>
       <button class="action-btn" onclick="copySubUrl()">
         <i class="ti ti-copy"></i>
-        <span data-i18n="copy_sub">کپی لینک ساب</span>
+        <span data-i18n="copy_sub">Copy Sub URL</span>
       </button>
       <button class="action-btn" onclick="showSubQR()">
         <i class="ti ti-qrcode"></i>
-        <span data-i18n="qr_sub">QR ساب</span>
+        <span data-i18n="qr_sub">Sub QR</span>
       </button>
       <button class="action-btn" onclick="refreshData()">
         <i class="ti ti-refresh"></i>
-        <span data-i18n="refresh">بروزرسانی</span>
+        <span data-i18n="refresh">Refresh</span>
       </button>
     </div>
 
     <div class="section-title">
       <i class="ti ti-bolt"></i>
-      <span data-i18n="quick_preview">پیش‌نمایش کانفیگ‌ها</span>
+      <span data-i18n="quick_preview">Quick Preview</span>
       <span class="section-count" id="quickCount">0</span>
     </div>
     <div class="cfg-list" id="quickList"></div>
@@ -760,7 +760,7 @@ __THEME_CSS__
   <section class="tab-panel" id="tab-configs">
     <div class="section-title">
       <i class="ti ti-list"></i>
-      <span data-i18n="all_configs">همه کانفیگ‌ها</span>
+      <span data-i18n="all_configs">All Configurations</span>
       <span class="section-count" id="cfgCount">0</span>
     </div>
     <div class="cfg-list" id="cfgList"></div>
@@ -768,13 +768,13 @@ __THEME_CSS__
 
   <section class="tab-panel" id="tab-stats">
     <div class="hero" style="padding:24px">
-      <div class="hero-stat-label"><i class="ti ti-database"></i> <span data-i18n="total_usage">کل مصرف</span></div>
+      <div class="hero-stat-label"><i class="ti ti-database"></i> <span data-i18n="total_usage">Total Usage</span></div>
       <div style="font-size:34px;font-weight:900;letter-spacing:-.03em;margin-top:6px" id="statsTotal">—</div>
-      <div style="font-size:11px;color:var(--t3);margin-top:4px" data-i18n="all_configs">همه کانفیگ‌ها</div>
+      <div style="font-size:11px;color:var(--t3);margin-top:4px" data-i18n="all_configs">All Configurations</div>
     </div>
     <div class="section-title">
       <i class="ti ti-chart-bar"></i>
-      <span data-i18n="per_config">مصرف هر کانفیگ</span>
+      <span data-i18n="per_config">Usage per Configuration</span>
     </div>
     <div class="cfg-list" id="statsList"></div>
   </section>
@@ -782,14 +782,14 @@ __THEME_CSS__
   <section class="tab-panel" id="tab-settings">
     <div class="section-title">
       <i class="ti ti-palette"></i>
-      <span data-i18n="theme">پوسته</span>
+      <span data-i18n="theme">Theme</span>
     </div>
     <div class="settings-card">
       <div class="settings-row">
         <div class="settings-icon"><i class="ti ti-brightness"></i></div>
         <div class="settings-text">
-          <div class="settings-label" data-i18n="theme_mode">حالت نمایش</div>
-          <div class="settings-sub" data-i18n="theme_sub">تاریک، روشن یا خودکار</div>
+          <div class="settings-label" data-i18n="theme_mode">Display Mode</div>
+          <div class="settings-sub" data-i18n="theme_sub">Dark, Light, or Auto</div>
         </div>
         <div class="segment" id="themeSegment">
           <button data-theme-opt="dark"><i class="ti ti-moon"></i></button>
@@ -801,13 +801,13 @@ __THEME_CSS__
 
     <div class="section-title">
       <i class="ti ti-language"></i>
-      <span data-i18n="language">زبان</span>
+      <span data-i18n="language">Language</span>
     </div>
     <div class="settings-card">
       <div class="settings-row">
         <div class="settings-icon"><i class="ti ti-world"></i></div>
         <div class="settings-text">
-          <div class="settings-label" data-i18n="interface_lang">زبان رابط کاربری</div>
+          <div class="settings-label" data-i18n="interface_lang">Interface Language</div>
           <div class="settings-sub">Persian / English</div>
         </div>
         <div class="segment" id="langSegment">
@@ -819,14 +819,14 @@ __THEME_CSS__
 
     <div class="section-title">
       <i class="ti ti-apps"></i>
-      <span data-i18n="client">کلاینت پیش‌فرض</span>
+      <span data-i18n="client">Default Client</span>
     </div>
     <div class="settings-card">
       <div class="settings-row" onclick="openImportSheet()">
         <div class="settings-icon"><i class="ti ti-device-mobile"></i></div>
         <div class="settings-text">
-          <div class="settings-label" id="defaultClientName" data-i18n="client_default">انتخاب کلاینت پیش‌فرض</div>
-          <div class="settings-sub" data-i18n="client_sub">برای دکمه‌ی افزودن سریع</div>
+          <div class="settings-label" id="defaultClientName" data-i18n="client_default">Choose Default Client</div>
+          <div class="settings-sub" data-i18n="client_sub">For the quick import button</div>
         </div>
         <i class="ti ti-chevron-left" style="color:var(--t3);font-size:18px"></i>
       </div>
@@ -834,13 +834,13 @@ __THEME_CSS__
 
     <div class="section-title">
       <i class="ti ti-info-circle"></i>
-      <span data-i18n="about">درباره</span>
+      <span data-i18n="about">About</span>
     </div>
     <div class="settings-card">
       <div class="settings-row">
         <div class="settings-icon"><i class="ti ti-shield-check"></i></div>
         <div class="settings-text">
-          <div class="settings-label" data-i18n="secure">اتصال رمزنگاری‌شده</div>
+          <div class="settings-label" data-i18n="secure">Encrypted Connection</div>
           <div class="settings-sub">TLS 1.3 · AES-256</div>
         </div>
       </div>
@@ -848,7 +848,7 @@ __THEME_CSS__
         <div class="settings-icon"><i class="ti ti-versions"></i></div>
         <div class="settings-text">
           <div class="settings-label">OMID Network</div>
-          <div class="settings-sub" data-i18n="version">نسخه</div>
+          <div class="settings-sub" data-i18n="version">Version</div>
         </div>
         <div class="settings-value">v2.0.0</div>
       </div>
@@ -858,30 +858,30 @@ __THEME_CSS__
 
 <nav class="bottom-nav">
   <button class="nav-item active" data-tab="home" onclick="switchTab('home')">
-    <i class="ti ti-home"></i><span data-i18n="tab_home">خانه</span>
+    <i class="ti ti-home"></i><span data-i18n="tab_home">Home</span>
   </button>
   <button class="nav-item" data-tab="configs" onclick="switchTab('configs')">
-    <i class="ti ti-list"></i><span data-i18n="tab_configs">کانفیگ‌ها</span>
+    <i class="ti ti-list"></i><span data-i18n="tab_configs">Configs</span>
   </button>
   <button class="nav-item" data-tab="stats" onclick="switchTab('stats')">
-    <i class="ti ti-chart-bar"></i><span data-i18n="tab_stats">آمار</span>
+    <i class="ti ti-chart-bar"></i><span data-i18n="tab_stats">Stats</span>
   </button>
   <button class="nav-item" data-tab="settings" onclick="switchTab('settings')">
-    <i class="ti ti-settings"></i><span data-i18n="tab_settings">تنظیمات</span>
+    <i class="ti ti-settings"></i><span data-i18n="tab_settings">Settings</span>
   </button>
 </nav>
 
 <div class="modal-bg" id="importModal" onclick="closeSheet('importModal')">
   <div class="sheet" onclick="event.stopPropagation()">
     <div class="sheet-handle"></div>
-    <div class="sheet-title"><i class="ti ti-rocket"></i> <span data-i18n="choose_client">انتخاب کلاینت</span></div>
+    <div class="sheet-title"><i class="ti ti-rocket"></i> <span data-i18n="choose_client">Choose Client</span></div>
     <div class="client-grid" id="clientGrid"></div>
     <div class="copy-field">
       <input id="importUrl" readonly>
       <button onclick="copyImportUrl()"><i class="ti ti-copy"></i></button>
     </div>
     <div style="font-size:10.5px;color:var(--t3);text-align:center;line-height:1.7">
-      <span data-i18n="import_hint">اگه کلاینت به‌طور خودکار باز نشد، لینک را کپی و دستی در کلاینت وارد کنید.</span>
+      <span data-i18n="import_hint">If the client did not open automatically, copy the link and paste it manually.</span>
     </div>
   </div>
 </div>
@@ -900,41 +900,93 @@ __THEME_CSS__
 
 <script>
 const I18N = {
-  fa: {
-    lock_sub:"این گروه با رمز محافظت شده. برای دیدن کانفیگ‌ها رمز را وارد کنید.",
-    enter:"ورود به گروه", online:"آنلاین", live_conns:"اتصالات زنده",
-    active_cfgs:"کانفیگ فعال", import:"افزودن به کلاینت", copy_sub:"کپی لینک ساب",
-    qr_sub:"QR ساب", refresh:"بروزرسانی", quick_preview:"پیش‌نمایش کانفیگ‌ها",
-    all_configs:"همه کانفیگ‌ها", total_usage:"کل مصرف", per_config:"مصرف هر کانفیگ",
-    theme:"پوسته", theme_mode:"حالت نمایش", theme_sub:"تاریک، روشن یا خودکار",
-    language:"زبان", interface_lang:"زبان رابط کاربری", client:"کلاینت پیش‌فرض",
-    client_default:"انتخاب کلاینت پیش‌فرض", client_sub:"برای دکمه‌ی افزودن سریع",
-    about:"درباره", secure:"اتصال رمزنگاری‌شده", version:"نسخه",
-    tab_home:"خانه", tab_configs:"کانفیگ‌ها", tab_stats:"آمار", tab_settings:"تنظیمات",
-    choose_client:"انتخاب کلاینت",
-    import_hint:"اگه کلاینت به‌طور خودکار باز نشد، لینک را کپی و دستی در کلاینت وارد کنید.",
-    copy_all:"کپی همه", copy:"کپی", copied:"کپی شد ✓",
-    error_load:"خطا در بارگذاری", wrong_pw:"رمز اشتباه است", link:"لینک", qr:"QR",
-    usage:"مصرف", no_configs:"هنوز کانفیگی وجود ندارد", unlimited:"نامحدود",
-    empty_title:"کانفیگی برای نمایش نیست", empty_sub:"هنوز هیچ کانفیگی در این گروه نیست"
-  },
   en: {
     lock_sub:"This group is password protected. Enter the password to view configurations.",
-    enter:"Enter Group", online:"Online", live_conns:"Live Connections",
-    active_cfgs:"Active Configs", import:"Import to Client", copy_sub:"Copy Sub URL",
-    qr_sub:"Sub QR", refresh:"Refresh", quick_preview:"Configuration Preview",
-    all_configs:"All Configurations", total_usage:"Total Usage", per_config:"Usage per Config",
-    theme:"Theme", theme_mode:"Display Mode", theme_sub:"Dark, Light or Auto",
-    language:"Language", interface_lang:"Interface Language", client:"Default Client",
-    client_default:"Choose Default Client", client_sub:"For quick import button",
-    about:"About", secure:"Encrypted Connection", version:"Version",
-    tab_home:"Home", tab_configs:"Configs", tab_stats:"Stats", tab_settings:"Settings",
+    enter:"Enter Group",
+    online:"Online",
+    live_conns:"Live Connections",
+    active_cfgs:"Active Configurations",
+    import:"Import to Client",
+    copy_sub:"Copy Sub URL",
+    qr_sub:"Sub QR",
+    refresh:"Refresh",
+    quick_preview:"Configuration Preview",
+    all_configs:"All Configurations",
+    total_usage:"Total Usage",
+    per_config:"Usage per Configuration",
+    theme:"Theme",
+    theme_mode:"Display Mode",
+    theme_sub:"Dark, Light, or Auto",
+    language:"Language",
+    interface_lang:"Interface Language",
+    client:"Default Client",
+    client_default:"Choose Default Client",
+    client_sub:"For the quick import button",
+    about:"About",
+    secure:"Encrypted Connection",
+    version:"Version",
+    tab_home:"Home",
+    tab_configs:"Configs",
+    tab_stats:"Stats",
+    tab_settings:"Settings",
     choose_client:"Choose Client",
-    import_hint:"If the client didn't open automatically, copy the link and paste it manually.",
-    copy_all:"Copy All", copy:"Copy", copied:"Copied ✓",
-    error_load:"Failed to load", wrong_pw:"Wrong password", link:"Link", qr:"QR",
-    usage:"Usage", no_configs:"No configurations yet", unlimited:"Unlimited",
-    empty_title:"No configurations to show", empty_sub:"There are no configurations in this group yet"
+    import_hint:"If the client did not open automatically, copy the link and paste it manually.",
+    copy_all:"Copy All",
+    copy:"Copy",
+    copied:"Copied ✓",
+    error_load:"Failed to load",
+    wrong_pw:"Wrong password",
+    link:"Link",
+    qr:"QR",
+    usage:"Usage",
+    no_configs:"No configurations",
+    unlimited:"Unlimited",
+    empty_title:"No configurations to display",
+    empty_sub:"There are no configurations in this group yet",
+  },
+  fa: {
+    lock_sub:"این گروه با رمز محافظت شده است. برای دیدن کانفیگ‌ها رمز را وارد کنید.",
+    enter:"ورود به گروه",
+    online:"آنلاین",
+    live_conns:"اتصالات زنده",
+    active_cfgs:"کانفیگ‌های فعال",
+    import:"افزودن به کلاینت",
+    copy_sub:"کپی لینک ساب",
+    qr_sub:"QR ساب",
+    refresh:"بروزرسانی",
+    quick_preview:"پیش‌نمایش کانفیگ‌ها",
+    all_configs:"همه کانفیگ‌ها",
+    total_usage:"کل مصرف",
+    per_config:"مصرف هر کانفیگ",
+    theme:"پوسته",
+    theme_mode:"حالت نمایش",
+    theme_sub:"تاریک، روشن یا خودکار",
+    language:"زبان",
+    interface_lang:"زبان رابط کاربری",
+    client:"کلاینت پیش‌فرض",
+    client_default:"انتخاب کلاینت پیش‌فرض",
+    client_sub:"برای دکمه افزودن سریع",
+    about:"درباره",
+    secure:"اتصال رمزنگاری‌شده",
+    version:"نسخه",
+    tab_home:"خانه",
+    tab_configs:"کانفیگ‌ها",
+    tab_stats:"آمار",
+    tab_settings:"تنظیمات",
+    choose_client:"انتخاب کلاینت",
+    import_hint:"اگر کلاینت به‌صورت خودکار باز نشد، لینک را کپی و دستی در کلاینت وارد کنید.",
+    copy_all:"کپی همه",
+    copy:"کپی",
+    copied:"کپی شد ✓",
+    error_load:"خطا در بارگذاری",
+    wrong_pw:"رمز اشتباه است",
+    link:"لینک",
+    qr:"QR",
+    usage:"مصرف",
+    no_configs:"کانفیگی وجود ندارد",
+    unlimited:"نامحدود",
+    empty_title:"کانفیگی برای نمایش نیست",
+    empty_sub:"هنوز هیچ کانفیگی در این گروه نیست",
   }
 };
 
@@ -955,7 +1007,7 @@ const STORAGE_PREFIX = "omid_pub_";
 let state = {
   data: null,
   savedPw: "",
-  lang: localStorage.getItem(STORAGE_PREFIX+"lang") || "fa",
+  lang: localStorage.getItem(STORAGE_PREFIX+"lang") || "en",
   theme: localStorage.getItem(STORAGE_PREFIX+"theme") || "dark",
   defaultClient: localStorage.getItem(STORAGE_PREFIX+"client") || "v2rayng"
 };
@@ -1377,7 +1429,7 @@ PUBLIC_PAGE_HTML_TEMPLATE = PUBLIC_PAGE_HTML_TEMPLATE.replace("__LOGO_B64__", LO
 
 
 def get_public_page_html(uuid_key: str) -> str:
-    """صفحه پابلیک ساب — UI مدرن اپ‌مانند با سیستم تم تمیز"""
+    """Public subscription page — modern app-like UI with a clean theme system."""
     return PUBLIC_PAGE_HTML_TEMPLATE.replace("__UUID_KEY__", uuid_key)
 
 
@@ -1681,32 +1733,64 @@ let DEFAULT_CLIENT = localStorage.getItem(SP+"client") || "v2rayng";
 
 const T = {
   en: {
-    title:"Subscription info", remaining:"Remaining", of:"of", usage:"Usage",
-    days_left:"Days left", expiry:"Expiry", status:"Status",
-    downloaded:"Downloaded", uploaded:"Uploaded", total_quota:"Total quota",
+    title:"Subscription info",
+    remaining:"Remaining",
+    of:"of",
+    usage:"Usage",
+    days_left:"Days left",
+    expiry:"Expiry",
+    status:"Status",
+    downloaded:"Downloaded",
+    uploaded:"Uploaded",
+    total_quota:"Total quota",
     last_online:"Last Online",
-    active:"Active", expired:"Expired", disabled:"Disabled",
-    tab_sub:"Subscription", tab_apps:"Apps", tab_configs:"Configs",
+    active:"Active",
+    expired:"Expired",
+    disabled:"Disabled",
+    tab_sub:"Subscription",
+    tab_apps:"Apps",
+    tab_configs:"Configs",
     scan_phone:"Scan with your phone",
     scan_desc:"Scan this code in your VPN app to add the subscription without copying the link.",
     auto_update:"Auto-updates every 12 hours",
-    copied:"Copied ✓", copy_failed:"Copy failed",
-    unlimited:"Unlimited", never:"Never", no_configs:"No configurations",
-    import_hint:"Open with:", share_text:"OMID Subscription"
+    copied:"Copied ✓",
+    copy_failed:"Copy failed",
+    unlimited:"Unlimited",
+    never:"Never",
+    no_configs:"No configurations",
+    import_hint:"Open with:",
+    share_text:"OMID Subscription",
+    close:"Close",
   },
   fa: {
-    title:"اطلاعات اشتراک", remaining:"باقی‌مانده", of:"از", usage:"مصرف",
-    days_left:"روز باقی‌مانده", expiry:"انقضا", status:"وضعیت",
-    downloaded:"دانلود", uploaded:"آپلود", total_quota:"سهمیه کل",
+    title:"اطلاعات اشتراک",
+    remaining:"باقی‌مانده",
+    of:"از",
+    usage:"مصرف",
+    days_left:"روز باقی‌مانده",
+    expiry:"انقضا",
+    status:"وضعیت",
+    downloaded:"دانلود",
+    uploaded:"آپلود",
+    total_quota:"سهمیه کل",
     last_online:"آخرین اتصال",
-    active:"فعال", expired:"منقضی", disabled:"غیرفعال",
-    tab_sub:"اشتراک", tab_apps:"اپلیکیشن", tab_configs:"کانفیگ‌ها",
+    active:"فعال",
+    expired:"منقضی",
+    disabled:"غیرفعال",
+    tab_sub:"اشتراک",
+    tab_apps:"اپلیکیشن",
+    tab_configs:"کانفیگ‌ها",
     scan_phone:"با گوشی اسکن کنید",
     scan_desc:"این کد را در اپ VPN اسکن کنید تا اشتراک بدون کپی لینک اضافه شود.",
     auto_update:"بروزرسانی خودکار هر ۱۲ ساعت",
-    copied:"کپی شد ✓", copy_failed:"کپی نشد",
-    unlimited:"نامحدود", never:"هیچ‌وقت", no_configs:"کانفیگی وجود ندارد",
-    import_hint:"باز کن با:", share_text:"اشتراک OMID"
+    copied:"کپی شد ✓",
+    copy_failed:"کپی نشد",
+    unlimited:"نامحدود",
+    never:"هیچ‌وقت",
+    no_configs:"کانفیگی وجود ندارد",
+    import_hint:"باز کن با:",
+    share_text:"اشتراک OMID",
+    close:"بستن",
   }
 };
 
@@ -1993,7 +2077,7 @@ function injectQrModal(){
         <div id="qr-modal-img" style="width:280px;height:280px"></div>
       </div>
       <button onclick="closeQR()" style="width:100%;padding:11px;border-radius:11px;background:var(--surface-2);border:1px solid var(--surface-b);color:var(--t1);font-weight:700;font-family:inherit">
-        ${LANG==="fa"?"بستن":"Close"}
+        ${t("close")}
       </button>
     </div>
   `;
@@ -2032,15 +2116,15 @@ SINGLE_CONFIG_HTML_TEMPLATE = SINGLE_CONFIG_HTML_TEMPLATE.replace("__LOGO_B64__"
 
 
 def get_single_config_page_html(uuid: str) -> str:
-    """صفحه‌ی UI برای یه کانفیگ تکی — طراحی Subscription Info مثل Marzban."""
+    """Single-config UI page — Marzban-style subscription information."""
     return SINGLE_CONFIG_HTML_TEMPLATE.replace("__UUID_KEY__", uuid)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# ADMIN PAGE — همه‌ی کانفیگ‌ها (Marzban-style dashboard)
+# ADMIN PAGE — all configurations (Marzban-style dashboard)
 # ═══════════════════════════════════════════════════════════════════════
 ADMIN_ALL_HTML_TEMPLATE = r'''<!DOCTYPE html>
-<html lang="fa" dir="rtl" data-theme="dark">
+<html lang="en" dir="ltr" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -2342,7 +2426,7 @@ html[dir="ltr"] .search input{padding:11px 14px 11px 40px}
     <div class="hd-logo"><img src="data:image/png;base64,__LOGO_B64__" alt="OMID"></div>
     <div class="hd-info">
       <div class="hd-title">OMID Network <small>ADMIN</small></div>
-      <div class="hd-sub" id="hdSub">همه‌ی کانفیگ‌ها · پنل مدیریتی</div>
+      <div class="hd-sub" id="hdSub">All Configurations · Admin Panel</div>
     </div>
     <div class="hd-actions">
       <button class="icon-btn" onclick="toggleTheme()" id="themeBtn" title="Theme"><i class="ti ti-moon"></i></button>
@@ -2372,16 +2456,16 @@ html[dir="ltr"] .search input{padding:11px 14px 11px 40px}
     <div class="hero">
       <div class="hero-main">
         <div>
-          <div class="hero-lbl" data-i18n="total_usage">کل مصرف</div>
+          <div class="hero-lbl" data-i18n="total_usage">Total Usage</div>
           <div class="hero-num" id="heroTotal">—</div>
           <div class="hero-desc" id="heroSub">—</div>
         </div>
       </div>
       <div class="hero-stats">
-        <div class="stat"><div class="stat-l"><i class="ti ti-keys"></i> <span data-i18n="total">کل کانفیگ</span></div><div class="stat-v" id="sTotal">—</div></div>
-        <div class="stat green"><div class="stat-l"><i class="ti ti-circle-check"></i> <span data-i18n="active">فعال</span></div><div class="stat-v" id="sActive">—</div></div>
-        <div class="stat amber"><div class="stat-l"><i class="ti ti-calendar-x"></i> <span data-i18n="expired">منقضی</span></div><div class="stat-v" id="sExpired">—</div></div>
-        <div class="stat red"><div class="stat-l"><i class="ti ti-circle-x"></i> <span data-i18n="disabled">غیرفعال</span></div><div class="stat-v" id="sDisabled">—</div></div>
+        <div class="stat"><div class="stat-l"><i class="ti ti-keys"></i> <span data-i18n="total">Total</span></div><div class="stat-v" id="sTotal">—</div></div>
+        <div class="stat green"><div class="stat-l"><i class="ti ti-circle-check"></i> <span data-i18n="active">Active</span></div><div class="stat-v" id="sActive">—</div></div>
+        <div class="stat amber"><div class="stat-l"><i class="ti ti-calendar-x"></i> <span data-i18n="expired">Expired</span></div><div class="stat-v" id="sExpired">—</div></div>
+        <div class="stat red"><div class="stat-l"><i class="ti ti-circle-x"></i> <span data-i18n="disabled">Disabled</span></div><div class="stat-v" id="sDisabled">—</div></div>
       </div>
     </div>
 
@@ -2396,8 +2480,8 @@ html[dir="ltr"] .search input{padding:11px 14px 11px 40px}
       <div class="section-head">
         <div class="section-ic"><i class="ti ti-bolt"></i></div>
         <div>
-          <div class="section-title" data-i18n="quick_preview">پیش‌نمایش سریع</div>
-          <div class="section-sub" data-i18n="quick_sub">آخرین کانفیگ‌های ساخته‌شده</div>
+          <div class="section-title" data-i18n="quick_preview">Quick Preview</div>
+          <div class="section-sub" data-i18n="quick_sub">Latest configurations</div>
         </div>
         <span class="section-count" id="quickCount">0</span>
       </div>
@@ -2409,7 +2493,7 @@ html[dir="ltr"] .search input{padding:11px 14px 11px 40px}
     <div class="toolbar">
       <div class="search">
         <i class="ti ti-search"></i>
-        <input type="text" id="searchInp" placeholder="جستجو..." oninput="renderConfigs()">
+        <input type="text" id="searchInp" data-i18n-placeholder="search_configs" placeholder="Search configurations..." oninput="renderConfigs()">
       </div>
     </div>
     <div class="toolbar" style="margin-bottom:14px">
@@ -2427,7 +2511,7 @@ html[dir="ltr"] .search input{padding:11px 14px 11px 40px}
     <div class="toolbar">
       <div class="search">
         <i class="ti ti-search"></i>
-        <input type="text" id="searchGrp" placeholder="جستجو در گروه‌ها..." oninput="renderGroups()">
+        <input type="text" id="searchGrp" data-i18n-placeholder="search_groups" placeholder="Search groups..." oninput="renderGroups()">
       </div>
     </div>
     <div id="grpListWrap"></div>
@@ -2439,34 +2523,78 @@ html[dir="ltr"] .search input{padding:11px 14px 11px 40px}
 
 <script>
 const SP = "omid_admin_";
-let LANG = localStorage.getItem(SP+"lang") || "fa";
+let LANG = localStorage.getItem(SP+"lang") || "en";
 let THEME = localStorage.getItem(SP+"theme") || "dark";
 let DATA = null;
 let FILTER = "all";
 let TAB = "overview";
 
 const T = {
-  fa: {
-    tab_overview:"نمای کلی", tab_configs:"کانفیگ‌ها", tab_groups:"گروه‌ها",
-    total_usage:"کل مصرف", total:"کل کانفیگ", active:"فعال", expired:"منقضی", disabled:"غیرفعال",
-    quick_preview:"پیش‌نمایش سریع", quick_sub:"آخرین کانفیگ‌های ساخته‌شده",
-    ungrouped:"بدون گروه", groups:"گروه‌های ساب",
-    copied:"کپی شد ✓", copy_failed:"کپی نشد", link:"لینک", sub:"ساب", qr:"QR",
-    import:"افزودن به کلاینت", unlimited:"نامحدود", connections:"اتصال",
-    empty_title:"هیچ کانفیگی نیست", empty_sub:"هنوز کانفیگی ساخته نشده",
-    empty_filter:"موردی با این فیلتر پیدا نشد",
-    loading:"در حال بارگذاری..."
-  },
   en: {
-    tab_overview:"Overview", tab_configs:"Configs", tab_groups:"Groups",
-    total_usage:"Total Usage", total:"Total", active:"Active", expired:"Expired", disabled:"Disabled",
-    quick_preview:"Quick Preview", quick_sub:"Latest configurations",
-    ungrouped:"Ungrouped", groups:"Subscription Groups",
-    copied:"Copied ✓", copy_failed:"Copy failed", link:"Link", sub:"Sub", qr:"QR",
-    import:"Import", unlimited:"Unlimited", connections:"conn",
-    empty_title:"No configurations", empty_sub:"No configs created yet",
+    tab_overview:"Overview",
+    tab_configs:"Configs",
+    tab_groups:"Groups",
+    total_usage:"Total Usage",
+    total:"Total",
+    active:"Active",
+    expired:"Expired",
+    disabled:"Disabled",
+    quick_preview:"Quick Preview",
+    quick_sub:"Latest configurations",
+    ungrouped:"Ungrouped",
+    groups:"Subscription Groups",
+    copied:"Copied ✓",
+    copy_failed:"Copy failed",
+    link:"Link",
+    sub:"Sub",
+    qr:"QR",
+    import:"Import",
+    unlimited:"Unlimited",
+    connections:"conn",
+    empty_title:"No configurations",
+    empty_sub:"No configs created yet",
     empty_filter:"No matches for this filter",
-    loading:"Loading..."
+    loading:"Loading...",
+    close:"Close",
+    search_configs:"Search configurations...",
+    search_groups:"Search groups...",
+    configs:"configs",
+    no_configs_group:"No configs in this group",
+    no_groups:"No groups found",
+    error_load:"Failed to load",
+  },
+  fa: {
+    tab_overview:"نمای کلی",
+    tab_configs:"کانفیگ‌ها",
+    tab_groups:"گروه‌ها",
+    total_usage:"کل مصرف",
+    total:"کل کانفیگ",
+    active:"فعال",
+    expired:"منقضی",
+    disabled:"غیرفعال",
+    quick_preview:"پیش‌نمایش سریع",
+    quick_sub:"آخرین کانفیگ‌های ساخته‌شده",
+    ungrouped:"بدون گروه",
+    groups:"گروه‌های ساب",
+    copied:"کپی شد ✓",
+    copy_failed:"کپی نشد",
+    link:"لینک",
+    sub:"ساب",
+    qr:"QR",
+    import:"افزودن به کلاینت",
+    unlimited:"نامحدود",
+    connections:"اتصال",
+    empty_title:"هیچ کانفیگی نیست",
+    empty_sub:"هنوز کانفیگی ساخته نشده",
+    empty_filter:"موردی با این فیلتر پیدا نشد",
+    loading:"در حال بارگذاری...",
+    close:"بستن",
+    search_configs:"جستجوی کانفیگ‌ها...",
+    search_groups:"Search groups...",
+    configs:"کانفیگ",
+    no_configs_group:"کانفیگی داخل این گروه نیست",
+    no_groups:"گروهی پیدا نشد",
+    error_load:"خطا در بارگذاری",
   }
 };
 function t(k){return (T[LANG] && T[LANG][k]) || T.fa[k] || k}
@@ -2533,6 +2661,7 @@ function applyLang(){
   document.documentElement.lang = LANG;
   document.documentElement.dir = LANG==="fa" ? "rtl" : "ltr";
   document.querySelectorAll("[data-i18n]").forEach(el=>el.textContent = t(el.dataset.i18n));
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el=>el.placeholder = t(el.dataset.i18nPlaceholder));
   const btn = document.getElementById("langBtn");
   if(btn) btn.textContent = LANG==="fa" ? "EN" : "FA";
 }
@@ -2600,7 +2729,7 @@ function showQR(title, link){
           <div id="qr-modal-admin-canvas" style="width:280px;height:280px"></div>
         </div>
         <button onclick="document.getElementById('qr-modal-admin').classList.remove('show')" style="width:100%;padding:11px;border-radius:11px;background:var(--surface-2);border:1px solid var(--surface-b);color:var(--t1);font-weight:700;font-family:inherit">
-          ${LANG==="fa"?"بستن":"Close"}
+          ${t("close")}
         </button>
       </div>
     `;
@@ -2741,7 +2870,7 @@ function renderGroups(){
             ${esc(g.name)}
             ${g.has_password ? '<span class="lock"><i class="ti ti-lock"></i></span>' : ''}
           </div>
-          <div class="group-meta">${g.links.length} ${LANG==="fa"?"کانفیگ":"configs"}${g.desc?" · "+esc(g.desc):""}</div>
+          <div class="group-meta">${g.links.length} ${t("configs")}${g.desc?" · "+esc(g.desc):""}</div>
         </div>
         <i class="ti ti-chevron-down group-toggle"></i>
       </div>
@@ -2751,7 +2880,7 @@ function renderGroups(){
           <button class="cfg-btn" onclick="event.stopPropagation();copyText('${esc(g.sub_url)}')"><i class="ti ti-rss"></i> Sub</button>
           <button class="cfg-btn" onclick="event.stopPropagation();showQR('${esc(g.name)}','${esc(g.sub_url)}')"><i class="ti ti-qrcode"></i> QR</button>
         </div>
-        ${g.links.length ? g.links.map(renderCard).join("") : '<div class="empty" style="padding:20px"><div class="empty-sub">'+(LANG==="fa"?"کانفیگی داخل این گروه نیست":"No configs in this group")+'</div></div>'}
+        ${g.links.length ? g.links.map(renderCard).join("") : '<div class="empty" style="padding:20px"><div class="empty-sub">'+t("no_configs_group")+'</div></div>'}
       </div>
     </div>
   `).join("");
@@ -2763,7 +2892,7 @@ function renderGroups(){
           <div class="group-ic" style="background:linear-gradient(135deg, var(--amber), var(--red))"><i class="ti ti-inbox"></i></div>
           <div class="group-info">
             <div class="group-name">${t("ungrouped")}</div>
-            <div class="group-meta">${DATA.ungrouped.length} ${LANG==="fa"?"کانفیگ":"configs"}</div>
+            <div class="group-meta">${DATA.ungrouped.length} ${t("configs")}</div>
           </div>
           <i class="ti ti-chevron-down group-toggle"></i>
         </div>
@@ -2775,7 +2904,7 @@ function renderGroups(){
   }
 
   if(!html){
-    html = '<div class="empty"><i class="ti ti-folders"></i><div class="empty-title">'+(LANG==="fa"?"گروهی پیدا نشد":"No groups found")+'</div></div>';
+    html = '<div class="empty"><i class="ti ti-folders"></i><div class="empty-title">'+t("no_groups")+'</div></div>';
   }
   wrap.innerHTML = html;
 }
@@ -2807,5 +2936,5 @@ ADMIN_ALL_HTML_TEMPLATE = ADMIN_ALL_HTML_TEMPLATE.replace("__LOGO_B64__", LOGO_B
 
 
 def get_admin_all_page_html() -> str:
-    """صفحه‌ی ادمین — نمایش همه‌ی کانفیگ‌ها با سبک Marzban."""
+    """Admin page — show all configurations in a Marzban-style layout."""
     return ADMIN_ALL_HTML_TEMPLATE
