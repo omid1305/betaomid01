@@ -79,16 +79,21 @@ xhttp_sessions: dict = {}
 XHTTP_LOCK = asyncio.Lock()
 
 FINGERPRINTS = {
+    # XHTTP downlink is an HTTP streaming response; Xray uses SSE-style
+    # headers for the default disguise. The proxy payload itself remains raw.
     "chrome": {
-        "content-type": "application/grpc",
-        "cache-control": "no-cache, no-store",
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-store",
         "x-accel-buffering": "no",
-        "server": "cloudflare",
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST",
     },
     "plain": {
         "content-type": "application/octet-stream",
         "cache-control": "no-store",
         "x-accel-buffering": "no",
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST",
     },
 }
 DEFAULT_FINGERPRINT = "chrome"
@@ -96,6 +101,7 @@ DEFAULT_FINGERPRINT = "chrome"
 
 def _resp_headers(fp: str) -> dict:
     return dict(FINGERPRINTS.get(fp, FINGERPRINTS[DEFAULT_FINGERPRINT]))
+
 
 
 def _tune_socket(writer: asyncio.StreamWriter):
@@ -535,8 +541,12 @@ async def _process_upload_data(sess: dict, data: bytes, flow: _AdaptiveFlow | No
 
 
 async def _pump_tcp_to_queue(sess: dict, reader: asyncio.StreamReader):
+    # Keep the HTTP layer and the proxy-protocol layer separate: the HTTP
+    # response advertises SSE via Content-Type, while the actual proxy bytes
+    # are forwarded unchanged. VLESS gets its two-byte response header once.
     first_vless = True
     gate = _QuotaGate(sess["uuid"])
+    delivered = 0
     try:
         while True:
             data = await reader.read(XHTTP_BUF)
@@ -548,6 +558,8 @@ async def _pump_tcp_to_queue(sess: dict, reader: asyncio.StreamReader):
             c = connections.get(sess["conn_id"])
             if c:
                 c["bytes"] += len(data)
+            delivered += len(data)
+            sess["last_seen"] = time.time()
 
             if sess["family"] == "vmess":
                 encoder = sess.get("vmess_encoder")
@@ -555,15 +567,21 @@ async def _pump_tcp_to_queue(sess: dict, reader: asyncio.StreamReader):
                 for chunk in chunks:
                     await sess["down_q"].put(chunk)
             else:
-                payload = (b"\\x00\\x00" + data) if (sess["family"] == "vless" and first_vless) else data
-                first_vless = False
-                await sess["down_q"].put(payload)
+                if sess["family"] == "vless" and first_vless:
+                    await sess["down_q"].put(b"\x00\x00")
+                    first_vless = False
+                await sess["down_q"].put(data)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.debug("XHTTP TCP downlink closed: %s", exc)
     finally:
         await gate.flush()
+        logger.info(
+            "downlink closed XHTTP[%s/%s] [%s] bytes=%d",
+            sess.get("family"), sess.get("mode"),
+            sess.get("session_id", "?")[:8], delivered,
+        )
         await _teardown(sess["session_id"])
 
 
