@@ -280,6 +280,9 @@ async def _get_or_create_session(uuid: str, mode: str, session_id: str, ip: str 
             "last_seen": time.time(),
             "conn_id": conn_id, "tcp_open": False, "udp_open": False,
             "transport_open": False, "closed": False,
+            # Serializes handshake initialization for concurrent HTTP uploads
+            # sharing the same XHTTP session_id.
+            "init_lock": asyncio.Lock(),
             "seq_buf": {}, "next_seq": 0,
             "gate": None,
             "flow": None,
@@ -297,8 +300,15 @@ async def _get_or_create_session(uuid: str, mode: str, session_id: str, ip: str 
         return sess
 
 
-async def _teardown(session_id: str):
+async def _teardown(session_id: str, expected_sess: dict | None = None):
     async with XHTTP_LOCK:
+        current = xhttp_sessions.get(session_id)
+        if current is None:
+            return
+        if expected_sess is not None and current is not expected_sess:
+            # A stale task from an older generation must not tear down a newer
+            # XHTTP session that reused the same session_id.
+            return
         sess = xhttp_sessions.pop(session_id, None)
     if not sess:
         return
@@ -506,14 +516,32 @@ async def _process_upload_data(sess: dict, data: bytes, flow: _AdaptiveFlow | No
     if not data:
         return
     sess["last_seen"] = time.time()
+
+    # Handshake initialization must be serialized per XHTTP session. Android
+    # clients can have the GET/downlink and POST/uplink paths active at the
+    # same time, so two request handlers may reach initialization concurrently.
+    # Re-check the state after acquiring the lock; if another coroutine already
+    # initialized the transport, this chunk is ordinary post-handshake data.
     if not sess.get("transport_open"):
-        sess["handshake_buffer"].extend(data)
-        ready, remainder = await _try_initialize(sess)
-        if not ready:
-            return
+        init_lock = sess["init_lock"]
+        async with init_lock:
+            if not sess.get("transport_open"):
+                sess["handshake_buffer"].extend(data)
+                ready, remainder = await _try_initialize(sess)
+                if not ready:
+                    return
+                sess["handshake_buffer"].clear()
+            else:
+                remainder = data
+
+        # Do not feed a TCP-only writer for a Trojan UDP session. UDP has no
+        # StreamWriter by design; route the remainder back through the normal
+        # open-transport path instead.
         if remainder:
-            await _write_tcp(sess, remainder, flow)
-        sess["handshake_buffer"].clear()
+            if sess.get("tcp_open"):
+                await _write_tcp(sess, remainder, flow)
+            elif sess.get("udp_open"):
+                await _process_upload_data(sess, remainder, flow)
         return
 
     if sess.get("tcp_open"):
@@ -591,7 +619,7 @@ async def _pump_tcp_to_queue(sess: dict, reader: asyncio.StreamReader):
             sess.get("family"), sess.get("mode"),
             sess.get("session_id", "?")[:8], delivered,
         )
-        await _teardown(sess["session_id"])
+        await _teardown(sess["session_id"], sess)
 
 
 async def _pump_udp_to_queue(sess: dict, incoming: asyncio.Queue):
@@ -614,7 +642,7 @@ async def _pump_udp_to_queue(sess: dict, incoming: asyncio.Queue):
         logger.debug("XHTTP UDP downlink closed: %s", exc)
     finally:
         await gate.flush()
-        await _teardown(sess["session_id"])
+        await _teardown(sess["session_id"], sess)
 
 
 def _downstream_gen(sess: dict):
@@ -681,7 +709,7 @@ async def packet_up_upload(uuid: str, session_id: str, seq: int, request: Reques
             await sess["writer"].drain()
     except Exception as exc:
         error_logs.append({"error": str(exc), "time": datetime.now().isoformat()})
-        await _teardown(session_id)
+        await _teardown(session_id, sess)
         raise HTTPException(status_code=502, detail=f"{sess.get('family', 'xhttp')} write failed")
 
     return {"ok": True, "connected": bool(sess.get("transport_open"))}
@@ -723,7 +751,7 @@ async def stream_up_upload(uuid: str, session_id: str, request: Request):
     except Exception as exc:
         error_logs.append({"error": str(exc), "time": datetime.now().isoformat()})
         await gate.flush()
-        await _teardown(session_id)
+        await _teardown(session_id, sess)
         raise HTTPException(status_code=502, detail=f"{sess.get('family', 'xhttp')} stream error")
 
     await gate.flush()
