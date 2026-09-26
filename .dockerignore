@@ -1,9 +1,6 @@
 # ══════════════════════════════════════════════════════════════════════════
 # .dockerignore — OMID-IRAN PANEL
 # ══════════════════════════════════════════════════════════════════════════
-# این فایل به Docker می‌گه چه چیزایی رو داخل image کپی نکنه.
-# مزایا: image سبک‌تر، build سریع‌تر، امنیت بیشتر (بدون نشت state لوکال).
-# ══════════════════════════════════════════════════════════════════════════
 
 # ── Git ───────────────────────────────────────────────────────────────────
 .git
@@ -62,12 +59,12 @@ Thumbs.db
 ehthumbs.db
 desktop.ini
 
-# ── Project runtime data (هرگز داخل image نره) ────────────────────────────
+# ── Project runtime data ─────────────────────────────────────────────────
 data/
-*.log
-logs/
 gateway_state.json
 gateway_secret.key
+*.log
+logs/
 *.tmp
 *.bak
 *.orig
@@ -85,14 +82,13 @@ SECURITY.md
 docs/
 
 # ── CI / CD ───────────────────────────────────────────────────────────────
-.github/
 .gitlab-ci.yml
 .travis.yml
 .circleci/
 Jenkinsfile
 azure-pipelines.yml
 
-# ── Docker / Compose (خود Dockerfile رو exclude نکن!) ─────────────────────
+# ── Docker / Compose ─────────────────────────────────────────────────────
 docker-compose.yml
 docker-compose.*.yml
 compose.yml
@@ -102,6 +98,8 @@ compose.*.yml
 .env
 .env.*
 !.env.example
+
+# ── Certificates / private keys ──────────────────────────────────────────
 *.pem
 *.key
 *.crt
