@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
     autosave_task = asyncio.create_task(_autosave_loop(), name="omid-state-autosave")
     log_activity("system", "Server started", "ok")
     logger.info(
-        f"OMID-IRAN PANEL v2.0.0 started on port {CONFIG['port']} "
+        f"OMID-IRAN PANEL v2.5.0 started on port {CONFIG['port']} "
         f"| DATA_DIR={DATA_DIR} | STATE_FILE={DATA_FILE}"
     )
 
@@ -336,6 +336,43 @@ def protocol_label(protocol: str | None) -> str:
 FINGERPRINTS = ("chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized")
 DEFAULT_FINGERPRINT = "chrome"
 
+# Optional connection optimization profile applied to generated share links.
+# The values are intentionally centralized so all 9 protocol/transport modes
+# receive exactly the same TLS/FinalMask profile when enabled.
+OPTIMIZED_CIPHER_SUITES = (
+    "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:"
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:"
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:"
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:"
+    "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:"
+    "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+)
+OPTIMIZED_FINAL_MASK = {
+    "tcp": [
+        {
+            "type": "fragment",
+            "settings": {
+                "packets": "tlshello",
+                "lengths": ["0", "104", "1"],
+                "delays": ["0"],
+                "maxSplit": "0",
+            },
+        },
+        {
+            "type": "fragment",
+            "settings": {
+                "packets": "1-1",
+                "lengths": ["114", "1"],
+                "delays": ["1"],
+                "maxSplit": "11",
+            },
+        },
+    ]
+}
+
+# ECH preset kept independent from the Connection Optimization profile.
+ECH_CONFIG_LIST_PRESET = "cloudflare-ech.com+udp://1.1.1.1"
+
 # Default ALPN by transport when no manual value is supplied
 DEFAULT_ALPN_BY_PROTOCOL = {
     "vless-ws": "http/1.1",
@@ -447,6 +484,9 @@ def generate_vless_link(
     fingerprint: str | None = None,
     alpn: str | None = None,
     port: int | None = None,
+    cipher_suites: str | None = None,
+    final_mask: dict | None = None,
+    ech_config_list: str | None = None,
 ) -> str:
     """Generate a VLESS share-link for WS or XHTTP packet/stream-up."""
     protocol = normalize_protocol(protocol)
@@ -488,6 +528,13 @@ def generate_vless_link(
             "fp": fp,
             "alpn": alpn_val,
         }
+    if cipher_suites:
+        params["cs"] = str(cipher_suites).strip()
+    if final_mask:
+        params["fm"] = json.dumps(final_mask, ensure_ascii=False, separators=(",", ":"))
+    if ech_config_list:
+        # v2rayNG/v2rayN map the ECH share-link field to `ech`.
+        params["ech"] = str(ech_config_list).strip()
     query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
     return f"vless://{uuid}@{host}:{port_val}?{query}#{quote(remark)}"
 
@@ -545,6 +592,9 @@ def generate_trojan_link(
     fingerprint: str | None = None,
     alpn: str | None = None,
     protocol: str = "trojan-ws",
+    cipher_suites: str | None = None,
+    final_mask: dict | None = None,
+    ech_config_list: str | None = None,
 ) -> str:
     """Generate Trojan share-link for WebSocket or XHTTP."""
     protocol = normalize_protocol(protocol)
@@ -573,6 +623,12 @@ def generate_trojan_link(
     }
     if transport != "ws":
         params["mode"] = transport
+    if cipher_suites:
+        params["cs"] = str(cipher_suites).strip()
+    if final_mask:
+        params["fm"] = json.dumps(final_mask, ensure_ascii=False, separators=(",", ":"))
+    if ech_config_list:
+        params["ech"] = str(ech_config_list).strip()
     query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
     return f"trojan://{quote(password)}@{host}:{port_val}?{query}#{quote(remark)}"
 
@@ -585,6 +641,9 @@ def generate_vmess_link(
     fingerprint: str | None = None,
     alpn: str | None = None,
     protocol: str = "vmess-ws",
+    cipher_suites: str | None = None,
+    final_mask: dict | None = None,
+    ech_config_list: str | None = None,
 ) -> str:
     """Generate a VMess share-link for WS or XHTTP packet/stream-up."""
     protocol = normalize_protocol(protocol)
@@ -631,6 +690,12 @@ def generate_vmess_link(
             "alpn": alpn_val,
             "insecure": "0",
         }
+        if cipher_suites:
+            params["cs"] = str(cipher_suites).strip()
+        if final_mask:
+            params["fm"] = json.dumps(final_mask, ensure_ascii=False, separators=(",", ":"))
+        if ech_config_list:
+            params["ech"] = str(ech_config_list).strip()
         query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
         return f"vmess://{quote(uuid)}@{host}:{port_val}?{query}#{quote(remark)}"
 
@@ -656,6 +721,12 @@ def generate_vmess_link(
         "vcn": "",
         "pcs": "",
     }
+    if cipher_suites:
+        vmess_config["cs"] = str(cipher_suites).strip()
+    if final_mask:
+        vmess_config["fm"] = final_mask
+    if ech_config_list:
+        vmess_config["echConfigList"] = str(ech_config_list).strip()
     json_bytes = json.dumps(
         vmess_config,
         ensure_ascii=False,
@@ -677,6 +748,9 @@ def vless_link_for_link(link: dict, uid: str, host: str) -> str:
             fingerprint=link.get("fingerprint"),
             alpn=link.get("alpn"),
             protocol=proto,
+            cipher_suites=link.get("cipher_suites"),
+            final_mask=link.get("final_mask"),
+            ech_config_list=link.get("ech_config_list"),
         )
 
     if family == "trojan":
@@ -687,6 +761,9 @@ def vless_link_for_link(link: dict, uid: str, host: str) -> str:
             fingerprint=link.get("fingerprint"),
             alpn=link.get("alpn"),
             protocol=proto,
+            cipher_suites=link.get("cipher_suites"),
+            final_mask=link.get("final_mask"),
+            ech_config_list=link.get("ech_config_list"),
         )
 
     return generate_vless_link(
@@ -694,6 +771,9 @@ def vless_link_for_link(link: dict, uid: str, host: str) -> str:
         fingerprint=link.get("fingerprint"),
         alpn=link.get("alpn"),
         port=link.get("port"),
+        cipher_suites=link.get("cipher_suites"),
+        final_mask=link.get("final_mask"),
+        ech_config_list=link.get("ech_config_list"),
     )
 
 def uptime() -> str:
@@ -841,6 +921,10 @@ async def ensure_default_link():
                     "protocol": DEFAULT_PROTOCOL,
                     "fingerprint": DEFAULT_FINGERPRINT,
                     "alpn": "",
+                    "connection_optimization": False,
+                    "cipher_suites": "",
+                    "final_mask": None,
+                    "ech_config_list": "",
                     "port": DEFAULT_PORT,
                     "ip_limit": 0,
                     "speed_limit_bytes": DEFAULT_SPEED_LIMIT,
@@ -1270,6 +1354,10 @@ async def make_link(
     fingerprint: str = DEFAULT_FINGERPRINT,
     alpn: str = "",
     port: int = DEFAULT_PORT,
+    connection_optimization: bool = False,
+    cipher_suites: str | None = None,
+    final_mask: dict | None = None,
+    ech_config_list: str | None = None,
     ip_limit: int = 0,
     speed_limit_bytes: int = 0,
     sub_token: str = "",
@@ -1297,6 +1385,10 @@ async def make_link(
             "password": trojan_password,
             "fingerprint": fingerprint,
             "alpn": (alpn or "").strip()[:100],
+            "connection_optimization": bool(connection_optimization),
+            "cipher_suites": (cipher_suites or "").strip()[:2000] if connection_optimization else "",
+            "final_mask": final_mask if connection_optimization and isinstance(final_mask, dict) else None,
+            "ech_config_list": (ech_config_list or "").strip()[:500] if ech_config_list else "",
             "port": port,
             "ip_limit": max(0, ip_limit),
             "speed_limit_bytes": max(0, speed_limit_bytes),
@@ -1451,6 +1543,12 @@ async def create_link(request: Request, _=Depends(require_auth)):
         raise HTTPException(status_code=400, detail=result)
     sub_token = result
 
+    connection_optimization = bool(body.get("connection_optimization", False))
+    cipher_suites = OPTIMIZED_CIPHER_SUITES if connection_optimization else ""
+    final_mask = OPTIMIZED_FINAL_MASK if connection_optimization else None
+    ech_enabled = bool(body.get("ech_enabled", False))
+    ech_config_list = ECH_CONFIG_LIST_PRESET if ech_enabled else ""
+
     uid, link = await make_link(
         label=body.get("label") or "New Link",
         limit_bytes=limit_bytes,
@@ -1461,6 +1559,10 @@ async def create_link(request: Request, _=Depends(require_auth)):
         fingerprint=body.get("fingerprint") or DEFAULT_FINGERPRINT,
         alpn=body.get("alpn") or "",
         port=port,
+        connection_optimization=connection_optimization,
+        cipher_suites=cipher_suites,
+        final_mask=final_mask,
+        ech_config_list=ech_config_list,
         ip_limit=ip_limit,
         speed_limit_bytes=speed_limit_bytes,
         sub_token=sub_token,
@@ -1537,6 +1639,18 @@ async def update_link(uid: str, request: Request, _=Depends(require_auth)):
             link["fingerprint"] = fp if fp in FINGERPRINTS else DEFAULT_FINGERPRINT
         if "alpn" in body:
             link["alpn"] = str(body.get("alpn") or "").strip()[:100]
+        if "connection_optimization" in body:
+            optimized = bool(body.get("connection_optimization"))
+            link["connection_optimization"] = optimized
+            link["cipher_suites"] = OPTIMIZED_CIPHER_SUITES if optimized else ""
+            link["final_mask"] = OPTIMIZED_FINAL_MASK if optimized else None
+        if "ech_enabled" in body:
+            ech_enabled = bool(body.get("ech_enabled"))
+            link["ech_config_list"] = ECH_CONFIG_LIST_PRESET if ech_enabled else ""
+        if "ech_config_list" in body:
+            # Allow an explicit value only for internal/API compatibility; UI uses the fixed preset.
+            raw_ech = str(body.get("ech_config_list") or "").strip()[:500]
+            link["ech_config_list"] = raw_ech
         if "port" in body:
             try:
                 p = int(body.get("port") or DEFAULT_PORT)
@@ -1555,7 +1669,7 @@ async def update_link(uid: str, request: Request, _=Depends(require_auth)):
                 raise HTTPException(status_code=400, detail=result)
             link["sub_token"] = result
             log_activity("link", f'Sub Token for config "{link["label"]}" set: {result or "cleared"}', "info")
-        if any(k in body for k in ("protocol", "label", "note", "limit_value", "expires_days", "fingerprint", "alpn", "port", "ip_limit", "speed_limit_value", "sub_token")):
+        if any(k in body for k in ("protocol", "label", "note", "limit_value", "expires_days", "fingerprint", "alpn", "connection_optimization", "ech_enabled", "ech_config_list", "port", "ip_limit", "speed_limit_value", "sub_token")):
             log_activity("link", f'Config "{link["label"]}" updated', "info")
         new_sub = body.get("sub_id", "UNCHANGED")
         if new_sub != "UNCHANGED":
